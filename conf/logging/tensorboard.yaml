@@ -1,0 +1,3 @@
+backend: tensorboard
+flush_secs: 15
+log_config: true

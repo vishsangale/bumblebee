@@ -28,12 +28,13 @@ This is currently a single-owner research repo. Optimize for clarity, reproducib
 The repo is still in the foundation and reproduction stage. The immediate focus is on paper notes, benchmark selection, small reproductions, and experiment scaffolding. Full architecture implementations should follow only after a baseline and evaluation plan exist for the relevant track.
 
 ## Repository Layout
+- `conf/`: Hydra config root, including `conf/track/` as the source of truth for track definitions
 - `docs/`: research program, roadmap, and seed paper list
-- `configs/tracks/`: YAML definitions for the three research tracks
-- `experiments/`: experiment entry points and run organization
-- `notes/`: paper notes, ablations, and failure logs
-- `src/bumblebee/`: shared Python code
-- `tests/`: lightweight regression checks for repo utilities
+- `src/<track>/`: reusable code that belongs to one research track
+- `src/shared/`: cross-track runtime, logging, and experiment helpers
+- `experiments/<track>/`: track-specific experiment entry points and stubs
+- `notes/<track>/`: paper notes, ablations, and failure logs organized by track
+- `tests/`: regression checks for config loading, runtime helpers, and smoke runs
 
 Start with these docs:
 - [docs/research_program.md](docs/research_program.md): the thesis and track definitions
@@ -49,7 +50,7 @@ make check
 ```
 
 ## Local Development Workflow
-Always use the repository virtual environment before running Python, Ruff, or Pytest commands.
+Always use the repository virtual environment before running Python, Hydra, Ruff, or Pytest commands.
 
 Create it once:
 ```bash
@@ -66,32 +67,36 @@ source .venv/bin/activate
 Common commands:
 ```bash
 source .venv/bin/activate
+make show-config
 make lint
 make test
 make check
+make smoke
 ```
 
-If a tool like `pytest` or `ruff` is not found, the usual fix is that `.venv` is not active yet.
+If a tool like `pytest` or `ruff` is not found, the usual fix is that `.venv` is not active yet. If a Hydra command fails unexpectedly, first run `make show-config` and inspect the resolved config.
 
 ## How To Start New Work
 Use this sequence for new research threads:
 
 ```bash
 source .venv/bin/activate
-mkdir -p notes experiments/<track>
+mkdir -p notes/<track> experiments/<track> src/<track>
 # add a paper note or experiment stub
 make check
 ```
 
 Expected pattern:
-- start with a note in `notes/`
+- start with a note in `notes/<track>/`
+- place Hydra-owned track definitions in `conf/track/`
 - place new experiment code under `experiments/memory_state/`, `experiments/adaptive_inference/`, or `experiments/hierarchical_programs/`
-- only move shared utilities into `src/bumblebee/` once they are reused
+- move reusable code into `src/<track>/`
+- only move utilities into `src/shared/` once they are reused across tracks
 
 ## Working Style
 This is a research repo, not a benchmark-chasing sandbox. New work should usually begin with:
 
-- a paper note in `notes/`
+- a paper note in `notes/<track>/`
 - a clear hypothesis tied to one of the three tracks
 - an experiment plan with success and failure criteria
 - a small baseline or reproduction before architectural variation

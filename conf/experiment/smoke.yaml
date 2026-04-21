@@ -1,0 +1,6 @@
+name: smoke
+input_dim: 16
+hidden_dim: 32
+num_classes: 4
+num_train: 256
+num_val: 128

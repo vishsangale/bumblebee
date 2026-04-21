@@ -1,10 +1,9 @@
 # Experiments
 
-Keep experiment code thin and reproducible. As the repo grows, organize entry points by track:
+Keep experiment entry points organized by research track:
 
 - `experiments/memory_state/`
 - `experiments/adaptive_inference/`
 - `experiments/hierarchical_programs/`
-- `experiments/shared/`
 
-Shared evaluation harnesses should live in `src/bumblebee/` once they become reusable across tracks.
+Use `experiments/train.py` as the minimal Hydra + PyTorch + TensorBoard smoke runner for the repo scaffold. Promote reusable utilities into `src/<track>/` or `src/shared/` once they stop being one-off experiment code.
