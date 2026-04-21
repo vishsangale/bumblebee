@@ -1,0 +1,16 @@
+slug: hierarchical_programs
+name: Hierarchical Programs
+thesis: Replace flat token processing with learned abstraction hierarchies, modular workspaces, and explicit intermediate state.
+seed_papers:
+  - https://arxiv.org/abs/1410.5401
+  - https://arxiv.org/abs/1909.10893
+  - https://arxiv.org/abs/2103.01197
+  - https://arxiv.org/abs/2412.09871
+initial_benchmarks:
+  - compositional generalization
+  - tokenizer-free language modeling
+  - algorithmic sequence tasks
+first_experiments:
+  - dynamic segment formation
+  - modular latent workspace with sparse communication
+risk: Modular structure can improve interpretability while hurting scale efficiency.

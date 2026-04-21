@@ -1,0 +1,17 @@
+slug: adaptive_inference
+name: Adaptive Inference
+thesis: Let inference-time compute scale with problem difficulty through latent refinement, halting, or diffusion-style generation.
+seed_papers:
+  - https://arxiv.org/abs/1603.08983
+  - https://arxiv.org/abs/1807.03819
+  - https://arxiv.org/abs/2412.06769
+  - https://arxiv.org/abs/2502.09992
+  - https://arxiv.org/abs/2506.17298
+initial_benchmarks:
+  - math and planning tasks
+  - backtracking-heavy reasoning
+  - compute-quality frontier measurements
+first_experiments:
+  - latent scratchpad with halting controller
+  - variable-budget decoding comparison
+risk: Extra compute can look useful without creating a better architecture.

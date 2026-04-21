@@ -1,0 +1,16 @@
+slug: memory_state
+name: Memory-State Architectures
+thesis: Replace the read-only KV-cache view of context with explicit write-capable memory and multi-timescale state.
+seed_papers:
+  - https://arxiv.org/abs/2405.21060
+  - https://arxiv.org/abs/2407.04620
+  - https://arxiv.org/abs/2501.00663
+  - https://arxiv.org/abs/2505.23735
+initial_benchmarks:
+  - long-context retrieval
+  - chunked language modeling
+  - recall-intensive synthetic tasks
+first_experiments:
+  - write-gated associative memory block
+  - memory consolidation across chunks
+risk: Easy to overfit on retrieval tasks without improving real reasoning.
