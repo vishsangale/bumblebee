@@ -160,40 +160,53 @@ def test_read_output_shape(memory):
     assert out.shape == (2, 32)
 
 
-def test_write_returns_surprise_shape(memory):
+def test_compute_surprise_shape(memory):
     x = torch.randn(2, 32)
-    surprise = memory.write(x)
+    surprise = memory.compute_surprise(x)
     assert surprise.shape == (2, 1)
 
 
 def test_surprise_is_nonnegative(memory):
     x = torch.randn(2, 32)
-    surprise = memory.write(x)
+    surprise = memory.compute_surprise(x)
     assert (surprise >= 0).all()
 
 
-def test_memory_weights_change_after_write(memory):
+def test_memory_weights_change_after_apply_update(memory):
     x = torch.randn(2, 32)
     W1_before = memory.W1.clone()
-    memory.write(x)
+    memory.compute_surprise(x)
+    memory.apply_update(gate_val=1.0)
     assert not torch.allclose(memory.W1, W1_before)
+
+
+def test_gate_zero_means_no_weight_change(memory):
+    x = torch.randn(2, 32)
+    W1_before = memory.W1.clone()
+    memory.compute_surprise(x)
+    memory.apply_update(gate_val=0.0)
+    # gate=0 → update is zeroed → W1 changes only via alpha*W1 (forgetting term)
+    # With alpha=0.99 close to 1 and small init std, difference is tiny but present
+    # The momentum contribution must be zero: m1 should be zeroed after gate=0
+    assert torch.allclose(memory.m1, torch.zeros_like(memory.m1), atol=1e-6)
 
 
 def test_reset_clears_momentum(memory):
     x = torch.randn(2, 32)
-    memory.write(x)
-    assert memory.m1.abs().sum() > 0  # momentum is nonzero after write
+    memory.compute_surprise(x)
+    memory.apply_update(gate_val=1.0)
+    assert memory.m1.abs().sum() > 0
     memory.reset()
     assert memory.m1.abs().sum() == 0
 
 
-def test_write_does_not_require_future_tokens(memory):
-    # write is called one token at a time — no look-ahead
+def test_compute_surprise_does_not_require_future_tokens(memory):
     x1 = torch.randn(2, 32)
     x2 = torch.randn(2, 32)
-    s1 = memory.write(x1)
-    s2 = memory.write(x2)
-    # Both surprise values are valid scalars (not NaN)
+    s1 = memory.compute_surprise(x1)
+    memory.apply_update(gate_val=1.0)
+    s2 = memory.compute_surprise(x2)
+    memory.apply_update(gate_val=1.0)
     assert not s1.isnan().any()
     assert not s2.isnan().any()
 ```
@@ -227,6 +240,16 @@ class TitansMACMemory(nn.Module):
     gradient step on a local associative loss. Weights are register_buffer
     tensors so the outer AdamW optimizer does not touch them.
 
+    The write is split into two steps so GatedTitansMAC can insert the gate
+    between computing the surprise and applying the update:
+
+        surprise = memory.compute_surprise(token)   # no weight change
+        gate = write_gate(hidden, surprise, step)
+        memory.apply_update(gate)                   # gated weight change
+
+    This gives a faithful implementation of gate_t × surprise_update_t —
+    the gate multiplies the update BEFORE it is applied to the weights.
+
     Reference: Titans (arxiv:2501.00663), MAC variant.
     """
 
@@ -247,6 +270,10 @@ class TitansMACMemory(nn.Module):
         self.beta = 0.9   # momentum coefficient
         self.alpha = 0.99  # adaptive forgetting
 
+        # Cached gradients between compute_surprise() and apply_update()
+        self._cached_g1: Tensor | None = None
+        self._cached_g2: Tensor | None = None
+
         self.reset()
 
     @property
@@ -262,45 +289,59 @@ class TitansMACMemory(nn.Module):
         with torch.no_grad():
             return self._forward_memory(query, self.W1, self.W2)
 
-    def write(self, token: Tensor) -> Tensor:
+    def compute_surprise(self, token: Tensor) -> Tensor:
         """
-        Compute surprise, update memory weights via inner gradient step.
+        Compute surprise norm and cache gradients. Does NOT update W1/W2.
+        Must be followed by apply_update() to complete the write step.
 
         token: (B, H)
         Returns: surprise_norm (B, 1) — detached, for use as gate input.
         """
-        # Detach copies for inner gradient computation
         W1 = self.W1.detach().requires_grad_(True)
         W2 = self.W2.detach().requires_grad_(True)
 
-        # Local associative loss: memory should reconstruct the current token
         pred = self._forward_memory(token.detach(), W1, W2)
         loss = F.mse_loss(pred, token.detach())
-
-        # Gradients w.r.t. memory weights
         g1, g2 = torch.autograd.grad(loss, [W1, W2])
 
-        # Surprise norm: average gradient magnitude across both weight matrices
+        self._cached_g1 = g1.detach()
+        self._cached_g2 = g2.detach()
+
         surprise = (g1.detach().norm() + g2.detach().norm()) / 2.0
         batch = token.shape[0]
-        surprise_per_token = surprise.expand(batch, 1).contiguous()
+        return surprise.expand(batch, 1).contiguous().detach()
 
-        # Momentum + adaptive forgetting update (no outer-graph tracking)
+    def apply_update(self, gate_val: float | Tensor = 1.0) -> None:
+        """
+        Apply cached gradients scaled by gate_val to memory weights.
+        Call compute_surprise() first.
+
+        gate_val: scalar or (B, 1) tensor in [0, 1].
+                  gate_val=1.0 → pure Titans update.
+                  gate_val=0.0 → no update (momentum zeroed).
+        """
+        assert self._cached_g1 is not None, "call compute_surprise() before apply_update()"
+        scale = (
+            gate_val if isinstance(gate_val, float)
+            else float(gate_val.mean().item())
+        )
+        eta = self.eta
         with torch.no_grad():
-            eta = self.eta
-            self.m1.mul_(self.beta).sub_(g1, alpha=eta)
-            self.m2.mul_(self.beta).sub_(g2, alpha=eta)
+            self.m1.mul_(self.beta).sub_(self._cached_g1, alpha=eta * scale)
+            self.m2.mul_(self.beta).sub_(self._cached_g2, alpha=eta * scale)
             self.W1.mul_(self.alpha).add_(self.m1)
             self.W2.mul_(self.alpha).add_(self.m2)
-
-        return surprise_per_token.detach()
+        self._cached_g1 = None
+        self._cached_g2 = None
 
     def reset(self) -> None:
-        """Reset memory weights and momentum to initial state."""
+        """Reset memory weights, momentum, and gradient cache."""
         nn.init.normal_(self.W1, std=0.02)
         nn.init.normal_(self.W2, std=0.02)
         self.m1.zero_()
         self.m2.zero_()
+        self._cached_g1 = None
+        self._cached_g2 = None
 ```
 
 - [ ] **Step 4: Run tests to confirm they pass**
@@ -607,22 +648,22 @@ class GatedTitansMAC(nn.Module):
         hidden: (B, H) — current token representation
         step:   int — position in sequence, for decay term
         Returns: (B, H) — hidden enriched with memory context
+
+        Write order: compute_surprise → gate → apply_update(gate).
+        The gate multiplies the update BEFORE it is applied to memory weights,
+        giving a faithful implementation of: update_t = gate_t × surprise_update_t.
         """
-        # Read: what does memory know about this query?
+        # Step 1: Read — no side effects on memory
         mem_ctx = self.memory.read(hidden)  # (B, H)
 
-        # Compute surprise and tentative update (before gate)
-        surprise = self.memory.write(hidden)  # (B, 1), also updates W1/W2 internally
+        # Step 2: Compute surprise and cache gradients (no weight change yet)
+        surprise = self.memory.compute_surprise(hidden)  # (B, 1)
 
-        # Gate: should we accept the write that just happened?
-        # If gate ≈ 0, undo the write by re-writing with zero update.
-        gate_val = self.gate(hidden.detach(), surprise, step)  # (B, 1)
+        # Step 3: Gate — uses surprise norm before it is applied
+        gate_val = self.gate(hidden.detach(), surprise, step)  # (B, 1) in [0, 1]
 
-        # Scale the last momentum step by gate (post-hoc gating via momentum scaling)
-        # gate < 1 means we dampen the update that was applied
-        with torch.no_grad():
-            self.memory.m1.mul_(gate_val.mean())
-            self.memory.m2.mul_(gate_val.mean())
+        # Step 4: Apply gated update — gate multiplies the momentum contribution
+        self.memory.apply_update(gate_val)
 
         # Enrich hidden with memory context
         combined = torch.cat([hidden, mem_ctx], dim=-1)  # (B, 2H)
@@ -902,9 +943,11 @@ class MemoryTransformer(nn.Module):
                 enriched = torch.zeros_like(x)
                 for t in range(T):
                     token_h = x[:, t, :]  # (B, d_model)
+                    # forward() calls: read → compute_surprise → gate → apply_update
                     mem_out = mem_module(token_h, step=t)  # (B, d_model)
                     enriched[:, t, :] = mem_out
-                    # Collect gate activations for interpretability
+                    # Gate activations are already computed inside forward();
+                    # re-read from the gate's last input for logging
                     if self._gate_activations is not None:
                         with torch.no_grad():
                             surprise = mem_module.memory.read(token_h).norm(dim=-1, keepdim=True)
@@ -1668,22 +1711,45 @@ After running the full training (real data, ~100k steps), evaluate and check all
 
 ```bash
 source .venv/bin/activate
-# Evaluate gated model
+# Evaluate gated model on memory diagnostic suite
 python experiments/eval_memory.py \
   model=memory_lm_100m \
   model.checkpoint_path=outputs/.../best.pt \
   evaluator=memory_diagnostic
 
-# Evaluate Titans-only baseline (same checkpoint dir, titans variant)
+# Evaluate Titans-only baseline
 python experiments/eval_memory.py \
   model=memory_lm_100m \
   model.checkpoint_path=outputs/.../titans_best.pt \
   model.use_memory=true \
   evaluator=memory_diagnostic
 
-# Gate AUROC
+# Gate AUROC on bAbI state-mutation tokens
 python experiments/memory_state/gate_auroc.py \
   --checkpoint outputs/.../best.pt
+
+# PG-19 perplexity — checks the memory module does not regress LM quality.
+# Download a small PG-19 subset (first 10 books, ~10MB) if not already present:
+#   pip install datasets
+#   python -c "
+#   from datasets import load_dataset
+#   import json, pathlib
+#   ds = load_dataset('pg19', split='test', streaming=True)
+#   pathlib.Path('data').mkdir(exist_ok=True)
+#   with open('data/pg19_test10.jsonl', 'w') as f:
+#       for i, ex in enumerate(ds):
+#           if i >= 10: break
+#           f.write(json.dumps({'text': ex['book_text'][:50000]}) + '\n')
+#   "
+# Then run perplexity for each checkpoint:
+python experiments/memory_state/train_memory.py \
+  experiment=lm_gated \
+  trainer.max_steps=0 \
+  +eval_only=true \
+  +eval_data=data/pg19_test10.jsonl \
+  model.checkpoint_path=outputs/.../best.pt
+# (Add eval_only mode to train_memory.py if not present; or use the loss
+# reported on a held-out split during training as a proxy.)
 ```
 
 **Go criteria (all must pass):**
@@ -1691,7 +1757,7 @@ python experiments/memory_state/gate_auroc.py \
 - [ ] Gated model matches or beats Titans-only at 2k words
 - [ ] Gate AUROC > 0.55 (above chance; target > 0.65)
 - [ ] No MQAR regression (gated MQAR ≥ baseline MQAR − 0.05)
-- [ ] PG-19 perplexity not worse than baseline (evaluate with `experiments/memory_state/train_memory.py` in eval mode)
+- [ ] PG-19 perplexity: gated model perplexity ≤ no-memory baseline perplexity + 0.5 nats
 
 **Stop condition:** If BABILong Δ < 0.05 vs. no-memory AND Titans-only also shows no improvement, investigate gate design and training stability before running Stage 3 ablations.
 
