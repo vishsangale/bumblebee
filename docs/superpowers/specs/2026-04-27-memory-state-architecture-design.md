@@ -5,7 +5,7 @@ Track: `memory_state`
 
 ## Summary
 
-An architecture paper proposing a write-gated neural memory module as a replacement/augmentation for the standard read-only KV cache. Anchored on Titans (`arxiv:2501.00663`), extended with an explicit interpretable write gate. Target venues: ICLR / NeurIPS / ICML.
+An architecture paper proposing a write-gated neural memory module as an augmentation to the standard transformer. Anchored on Titans (`arxiv:2501.00663`), extended with an explicit interpretable write gate. Target venues: ICLR / NeurIPS / ICML.
 
 ---
 
@@ -38,7 +38,7 @@ Titans is the cleaner reproduction target: one module, clear read/write semantic
 
 **Benchmark fidelity:** Use proxy_v0 during development for fast iteration. Before submission, port BABILong (publicly available) and MQAR (from Zoology) to official datasets. Paper numbers must be official-benchmark grounded.
 
-**Positive result definition:** BABILong > 0.50 at 512 words, shallower degradation curve with context length versus the Qwen2.5-3B baseline. RULER improvement on multi-needle and tracing subtasks.
+**Positive result definition:** Our write-gated memory model scores > 0.50 on BABILong at 512 words versus our own trained transformer baseline (ablation 1), with a shallower degradation curve as context grows. RULER improvement on multi-needle and tracing subtasks versus the same baseline. Qwen2.5-3B results serve as motivation in the intro, not as the ablation comparison target.
 
 ---
 
