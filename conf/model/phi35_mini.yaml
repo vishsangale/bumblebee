@@ -1,0 +1,14 @@
+backend: huggingface
+name: phi35_mini
+model_id: microsoft/Phi-3.5-mini-instruct
+trust_remote_code: true
+dtype: bfloat16
+attn_implementation: eager
+device_map: auto
+use_chat_template: true
+system_prompt: You are evaluating memory tasks. Return only the final answer with no explanation.
+max_input_tokens: 8192
+max_new_tokens: 24
+do_sample: false
+temperature: 0.0
+top_p: 1.0

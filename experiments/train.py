@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import sys
@@ -18,7 +20,12 @@ from shared.runtime import prepare_run_artifacts, save_checkpoint
 from shared.smoke import TinyClassifier, build_synthetic_loaders, select_device
 
 
-def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.device) -> tuple[float, float]:
+def evaluate(
+    model: nn.Module,
+    loader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> tuple[float, float]:
     model.eval()
     total_loss = 0.0
     total_correct = 0

@@ -1,0 +1,21 @@
+slug: nolima
+track: memory_state
+tier: stress
+family: latent_retrieval
+source:
+  title: "NoLiMa: Long-Context Evaluation Beyond Literal Matching"
+  url: https://arxiv.org/abs/2502.05167
+question: Can the model retrieve relevant evidence when the query and evidence have minimal lexical overlap?
+signals:
+  - latent retrieval
+  - paraphrase robustness
+  - long-context degradation without string matching shortcuts
+metrics:
+  - accuracy
+recommended_lengths:
+  - 4096
+  - 8192
+  - 32768
+notes:
+  - Run after RULER to check whether strong retrieval scores were only driven by surface matching.
+  - Record failures where the model finds the right span family but not the exact latent association.

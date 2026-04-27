@@ -1,0 +1,22 @@
+slug: mqar
+track: memory_state
+tier: diagnostic
+family: associative_recall
+source:
+  title: "Zoology: Measuring and Improving Recall in Efficient Language Models"
+  url: https://arxiv.org/abs/2312.04927
+question: Can the model recover key-value associations when the query is far from the evidence?
+signals:
+  - associative recall
+  - distance sensitivity
+  - interference robustness
+metrics:
+  - accuracy
+  - accuracy_by_distance
+recommended_lengths:
+  - 1024
+  - 2048
+  - 4096
+notes:
+  - Start here because it isolates memory retrieval before broader long-context reasoning.
+  - Include repeated-query settings to expose interference and overwrite failures.

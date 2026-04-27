@@ -3,9 +3,11 @@
 ## Phase 0: Foundation
 - lock the three research tracks and seed paper list
 - build a minimal code and evaluation scaffold
+- fix the first `memory_state` evaluation suite before adding architecture variants
 - define one tractable benchmark family per track
 
 ## Phase 1: Reproduction
+- run the `memory_state` core suite on at least one pretrained long-context baseline
 - implement a narrow baseline from each track
 - verify small-scale reproduction before introducing new ideas
 - record failures and ambiguities in `notes/`

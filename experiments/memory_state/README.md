@@ -1,3 +1,3 @@
 # Memory-State Experiments
 
-Place runnable experiments for the `memory_state` track here. Start with narrow reproductions and baseline comparisons before adding new architecture variants.
+Place runnable experiments for the `memory_state` track here. Start with evaluation of pretrained baselines on the fixed memory suite before adding new architecture variants.

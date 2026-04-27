@@ -22,13 +22,16 @@ This repo is in the foundation phase. The current goals are:
 - reproduce one narrow baseline per track before proposing hybrids
 - preserve notes, failures, and benchmark caveats as first-class artifacts
 
+## Memory-State First
+The first concrete research step is not a new architecture. It is a fixed `memory_state` evaluation suite and at least one pretrained baseline run. The initial suite is anchored on `MQAR`, `RULER`, `NoLiMa`, and `BABILong`; see [docs/memory_state_eval_suite.md](docs/memory_state_eval_suite.md).
+
 This is currently a single-owner research repo. Optimize for clarity, reproducibility, and fast iteration rather than collaboration overhead.
 
 ## Current Status
 The repo is still in the foundation and reproduction stage. The immediate focus is on paper notes, benchmark selection, small reproductions, and experiment scaffolding. Full architecture implementations should follow only after a baseline and evaluation plan exist for the relevant track.
 
 ## Repository Layout
-- `conf/`: Hydra config root, including `conf/track/` as the source of truth for track definitions
+- `conf/`: Hydra config root, including `conf/track/` for track definitions, `conf/benchmark/` for benchmark specs, and `conf/eval_suite/` for curated evaluation suites
 - `docs/`: research program, roadmap, and seed paper list
 - `src/<track>/`: reusable code that belongs to one research track
 - `src/shared/`: cross-track runtime, logging, and experiment helpers
@@ -68,13 +71,22 @@ Common commands:
 ```bash
 source .venv/bin/activate
 make show-config
+make show-eval-config
 make lint
 make test
 make check
 make smoke
+make eval-memory-smoke
 ```
 
 If a tool like `pytest` or `ruff` is not found, the usual fix is that `.venv` is not active yet. If a Hydra command fails unexpectedly, first run `make show-config` and inspect the resolved config.
+
+For the memory track, the fastest safe validation path is:
+```bash
+source .venv/bin/activate
+make eval-memory-smoke
+python experiments/eval_memory.py model=qwen25_3b evaluator.examples_per_benchmark=2 evaluator.context_word_steps=[128,512]
+```
 
 ## How To Start New Work
 Use this sequence for new research threads:
@@ -104,6 +116,7 @@ This is a research repo, not a benchmark-chasing sandbox. New work should usuall
 If a change does not clarify a hypothesis, improve the scaffold, or tighten evaluation, it is probably premature.
 
 ## Near-Term Deliverables
+- a fixed memory-state evaluation suite with one pretrained baseline run
 - a minimal experiment entry point for each track
 - shared benchmark utilities for long-context, reasoning, and compositional tasks
 - one reproducible baseline result per track

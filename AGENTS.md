@@ -5,6 +5,8 @@ This repository is a Python-first research codebase for post-transformer archite
 
 Use these directories consistently:
 - `docs/` for the research program, roadmap, and reading list
+- `conf/benchmark/` for benchmark definitions tied to a track hypothesis
+- `conf/eval_suite/` for curated benchmark bundles such as `memory_state_core`
 - `conf/track/` for canonical track definitions
 - `conf/` for Hydra defaults, runtime settings, logging, and experiment configs
 - `experiments/<track>/` for track-specific entry points and run structure
@@ -49,6 +51,14 @@ Do not rely on the system Python or globally installed `pytest` and `ruff` for t
 - `make check`: runs linting and tests together
 - `make show-config`: renders the resolved Hydra config for the smoke runner
 - `make smoke`: runs a 1-epoch synthetic PyTorch smoke experiment with TensorBoard and checkpoints
+- `make show-eval-config`: renders the resolved Hydra config for the memory evaluation runner
+- `make eval-memory-smoke`: validates the memory suite with the `oracle` backend before downloading a real model
+
+For the first real memory baseline, use:
+```bash
+source .venv/bin/activate
+python experiments/eval_memory.py model=qwen25_3b evaluator.examples_per_benchmark=2 evaluator.context_word_steps=[128,512]
+```
 
 ## Coding Style & Naming Conventions
 Target Python 3.11+ and use 4-space indentation. Prefer small, composable modules over notebook-only logic. Name Python files and functions in `snake_case`, classes in `PascalCase`, and configuration files with descriptive lowercase names such as `memory_state.yaml`.
@@ -82,6 +92,8 @@ Every new experiment should make four things explicit:
 - what baseline it is compared against
 
 If one of those is missing, the experiment is probably not ready to add.
+
+For `memory_state` work, prefer the fixed evaluation suite before new model code. If a proposal has not been checked against `MQAR`, `RULER`, `NoLiMa`, or `BABILong`, treat it as a hypothesis note, not a result.
 
 ## Commit Guidelines
 Use short imperative commit subjects, for example `Add Hydra smoke runner` or `Move track configs into conf`. Keep commits scoped to one change: scaffolding, docs, or experiment logic.

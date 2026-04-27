@@ -1,0 +1,27 @@
+slug: babilong
+track: memory_state
+tier: reasoning
+family: distributed_fact_reasoning
+source:
+  title: "BABILong: Testing the Limits of LLMs with Long Context Reasoning-in-a-Haystack"
+  url: https://arxiv.org/abs/2406.10149
+question: Can the model reason over facts scattered across very long distracting documents?
+subtasks:
+  - fact_chaining
+  - simple_induction
+  - deduction
+  - counting
+  - lists_and_sets
+signals:
+  - distributed fact recall
+  - multi-step reasoning over retrieved facts
+  - length extrapolation under heavy distraction
+metrics:
+  - accuracy
+recommended_lengths:
+  - 16384
+  - 32768
+  - 65536
+notes:
+  - Start with a narrow subset before scaling to the full task family.
+  - Report accuracy by reasoning family, not only a pooled average.

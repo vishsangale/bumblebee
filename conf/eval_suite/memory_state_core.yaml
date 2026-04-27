@@ -1,0 +1,11 @@
+slug: memory_state_core
+track: memory_state
+goal: Evaluate pretrained models on memory-sensitive tasks before proposing new memory architectures.
+benchmarks:
+  - mqar
+  - ruler
+  - nolima
+  - babilong
+decision_rule:
+  - Do not propose a new memory block until at least one pretrained baseline has been run on the full suite.
+  - Prefer improvements that hold on one pure recall diagnostic and one reasoning benchmark.

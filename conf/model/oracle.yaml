@@ -1,0 +1,14 @@
+backend: oracle
+name: oracle
+model_id: oracle
+trust_remote_code: false
+dtype: auto
+attn_implementation: eager
+device_map: auto
+use_chat_template: false
+system_prompt: You answer benchmark questions exactly.
+max_input_tokens: 4096
+max_new_tokens: 16
+do_sample: false
+temperature: 0.0
+top_p: 1.0

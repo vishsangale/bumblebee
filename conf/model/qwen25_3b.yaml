@@ -1,0 +1,14 @@
+backend: huggingface
+name: qwen25_3b
+model_id: Qwen/Qwen2.5-3B-Instruct
+trust_remote_code: false
+dtype: bfloat16
+attn_implementation: sdpa
+device_map: auto
+use_chat_template: true
+system_prompt: You are evaluating memory tasks. Return only the final answer with no explanation.
+max_input_tokens: 8192
+max_new_tokens: 24
+do_sample: false
+temperature: 0.0
+top_p: 1.0

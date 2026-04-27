@@ -1,0 +1,26 @@
+slug: ruler
+track: memory_state
+tier: core
+family: long_context_synthetic
+source:
+  title: "RULER: What's the Real Context Size of Your Long-Context Language Models?"
+  url: https://arxiv.org/abs/2404.06654
+question: Does the model retain retrieval, tracing, and aggregation ability as context and task complexity grow?
+subtasks:
+  - single_needle
+  - multi_needle
+  - tracing
+  - aggregation
+signals:
+  - long-context retrieval
+  - multi-hop state tracing
+  - aggregation under distraction
+metrics:
+  - accuracy
+recommended_lengths:
+  - 8192
+  - 16384
+  - 32768
+notes:
+  - Use RULER rather than plain needle-only tests because it stresses more than literal retrieval.
+  - Keep exact length sweeps so claimed context size can be compared to usable context size.

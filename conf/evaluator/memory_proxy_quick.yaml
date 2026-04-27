@@ -1,0 +1,8 @@
+suite: memory_state_core
+protocol: proxy_v0
+seed: 0
+examples_per_benchmark: 3
+context_word_steps:
+  - 256
+  - 1024
+save_predictions: true
