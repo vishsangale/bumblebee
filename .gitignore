@@ -10,3 +10,5 @@ artifacts/
 checkpoints/
 outputs/
 notebooks/.ipynb_checkpoints/
+.worktrees/
+worktrees/
