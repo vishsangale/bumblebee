@@ -119,7 +119,7 @@ def main(cfg: DictConfig) -> None:
 
         # Fetch batch
         if use_real_data:
-            tokens = dataset.get_batch(step * batch_size, batch_size, device)
+            tokens = dataset.get_batch(step * batch_size * seq_len, batch_size, device)
         else:
             tokens = synthetic_batch(batch_size, seq_len, vocab_size, device)
 
