@@ -1,0 +1,13 @@
+name: lm_baseline
+use_memory: false
+model:
+  vocab_size: 50257
+  d_model: 768
+  n_heads: 12
+  n_layers: 12
+  d_ffn: 3072
+  max_seq_len: 2048
+  dropout: 0.1
+  memory_mlp_size: 64
+  memory_every_n_layers: 2
+  memory_decay_init: 0.99

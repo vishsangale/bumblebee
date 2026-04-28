@@ -14,8 +14,7 @@ class ModelResponse:
 
 
 class TextGenerator(Protocol):
-    def generate(self, prompt: str, *, answer: str | None = None) -> ModelResponse:
-        ...
+    def generate(self, prompt: str, *, answer: str | None = None) -> ModelResponse: ...
 
 
 def _resolve_dtype(name: str):
@@ -60,9 +59,8 @@ class HuggingFaceGenerator:
         self.device = next(self.model.parameters()).device
 
     def _format_prompt(self, prompt: str) -> str:
-        if (
-            bool(self.model_cfg.use_chat_template)
-            and hasattr(self.tokenizer, "apply_chat_template")
+        if bool(self.model_cfg.use_chat_template) and hasattr(
+            self.tokenizer, "apply_chat_template"
         ):
             messages = [
                 {"role": "system", "content": str(self.model_cfg.system_prompt)},

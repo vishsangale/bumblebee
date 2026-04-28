@@ -94,8 +94,7 @@ def _ruler_example(context_words: int, rng: random.Random, case_id: int) -> Memo
         holders = ["Ava", "Ben", "Cora", "Dax"]
         item = "packet"
         steps = [
-            f"{holders[i]} passed the {item} to {holders[i + 1]}."
-            for i in range(len(holders) - 1)
+            f"{holders[i]} passed the {item} to {holders[i + 1]}." for i in range(len(holders) - 1)
         ]
         prompt = (
             "Transfer log:\n"
