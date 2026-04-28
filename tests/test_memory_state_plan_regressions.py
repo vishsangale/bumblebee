@@ -47,7 +47,9 @@ def _tiny_memory_cfg(**overrides: int | float) -> MemoryTransformerConfig:
     return MemoryTransformerConfig(**values)
 
 
-def test_memory_transformer_language_loss_trains_write_gate_and_inner_eta() -> None:
+def test_memory_transformer_language_loss_trains_write_gate() -> None:
+    # eta is a fixed float (not nn.Parameter) — no LM-loss gradient path exists
+    # through the no_grad memory update. WriteGate trains via gate_val * mem_ctx.
     model = MemoryTransformer(_tiny_memory_cfg(), use_memory=True)
     input_ids = torch.randint(0, model.cfg.vocab_size, (2, 8))
     targets = torch.randint(0, model.cfg.vocab_size, (2, 8))
@@ -64,7 +66,6 @@ def test_memory_transformer_language_loss_trains_write_gate_and_inner_eta() -> N
     assert gate_grads
     assert all(grad is not None for grad in gate_grads)
     assert any(grad.abs().sum().item() > 0 for grad in gate_grads)
-    assert memory_module.memory.log_eta.grad is not None
 
 
 def test_train_memory_config_uses_memory_model_and_memory_trainer() -> None:

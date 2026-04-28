@@ -39,10 +39,9 @@ class TitansMACMemory(nn.Module):
         self.register_buffer("m1", torch.zeros(memory_mlp_size, hidden_size))
         self.register_buffer("m2", torch.zeros(hidden_size, memory_mlp_size))
 
-        # Learnable inner learning rate (trained by outer optimizer)
-        self.log_eta = nn.Parameter(torch.tensor(-2.3))  # init: eta ≈ 0.1
-        self.beta = 0.9  # momentum coefficient
-        self.alpha = 0.99  # adaptive forgetting
+        self.eta: float = 0.1  # inner learning rate (fixed; no LM-loss gradient path)
+        self.beta: float = 0.9  # momentum coefficient
+        self.alpha: float = 0.99  # adaptive forgetting
 
         # Cached gradients between compute_surprise() and apply_update()
         self._cached_g1: Tensor | None = None
@@ -50,17 +49,20 @@ class TitansMACMemory(nn.Module):
 
         self.reset()
 
-    @property
-    def eta(self) -> float:
-        return float(self.log_eta.exp())
-
     def _forward_memory(self, query: Tensor, W1: Tensor, W2: Tensor) -> Tensor:
         """query: (..., H) → (..., H) using given weight tensors."""
         return F.gelu(query @ W1.T) @ W2.T
 
     def read(self, query: Tensor) -> Tensor:
-        """Read from memory without updating it. query: (B, H) → (B, H)."""
-        return self._forward_memory(query, self.W1, self.W2)
+        """Read from memory without updating it. query: (B, H) → (B, H).
+
+        W1/W2 are treated as non-differentiable constants here. Gradient
+        flows only through query, which is what allows apply_update() to
+        modify W1/W2 in-place without invalidating the autograd graph.
+        """
+        with torch.no_grad():
+            mem_ctx = self._forward_memory(query, self.W1, self.W2)
+        return mem_ctx.detach()
 
     def compute_surprise(self, token: Tensor) -> Tensor:
         """
@@ -96,30 +98,32 @@ class TitansMACMemory(nn.Module):
         """
         assert self._cached_g1 is not None, "call compute_surprise() before apply_update()"
         if isinstance(gate_val, Tensor):
-            scale = gate_val.mean().to(device=self.W1.device, dtype=self.W1.dtype)
+            scale = float(gate_val.detach().mean().item())
         else:
-            scale = torch.tensor(gate_val, device=self.W1.device, dtype=self.W1.dtype)
-
-        eta = self.log_eta.exp().to(device=self.W1.device, dtype=self.W1.dtype)
+            scale = float(gate_val)
         g1 = self._cached_g1.to(device=self.W1.device, dtype=self.W1.dtype)
         g2 = self._cached_g2.to(device=self.W2.device, dtype=self.W2.dtype)
-
-        self.m1 = self.m1 * self.beta - g1 * eta * scale
-        self.m2 = self.m2 * self.beta - g2 * eta * scale
-        self.W1 = self.W1 * self.alpha + self.m1
-        self.W2 = self.W2 * self.alpha + self.m2
+        # Clip inner gradient norms to prevent W1/W2 from growing unboundedly
+        # across many token updates within a single forward pass.
+        g1_norm = g1.norm()
+        if g1_norm > 1.0:
+            g1 = g1 / g1_norm
+        g2_norm = g2.norm()
+        if g2_norm > 1.0:
+            g2 = g2 / g2_norm
+        with torch.no_grad():
+            self.m1.mul_(self.beta).sub_(g1, alpha=self.eta * scale)
+            self.m2.mul_(self.beta).sub_(g2, alpha=self.eta * scale)
+            self.W1.mul_(self.alpha).add_(self.m1)
+            self.W2.mul_(self.alpha).add_(self.m2)
         self._cached_g1 = None
         self._cached_g2 = None
 
     def reset(self) -> None:
-        """Reset memory weights, momentum, and gradient cache."""
-        device = self.W1.device
-        dtype = self.W1.dtype
-        self.W1 = torch.empty(self.memory_mlp_size, self.hidden_size, device=device, dtype=dtype)
-        self.W2 = torch.empty(self.hidden_size, self.memory_mlp_size, device=device, dtype=dtype)
-        self.m1 = torch.zeros_like(self.W1)
-        self.m2 = torch.zeros_like(self.W2)
+        """Reset memory weights, momentum, and gradient cache (in-place)."""
         nn.init.normal_(self.W1, std=0.02)
         nn.init.normal_(self.W2, std=0.02)
+        self.m1.zero_()
+        self.m2.zero_()
         self._cached_g1 = None
         self._cached_g2 = None
