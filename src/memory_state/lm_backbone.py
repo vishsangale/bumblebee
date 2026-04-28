@@ -159,19 +159,11 @@ class MemoryTransformer(nn.Module):
             x = block(x)
 
         x = self.ln_f(x)
-        return self.head(x)
+        logits = self.head(x)
+        return logits
 
     def reset_memory(self) -> None:
-        for mem in self.memory_modules:
-            mem.reset()
-        self._gate_activations = None
-
-    def get_gate_activations(self) -> list[Tensor] | None:
-        """
-        Returns list of gate activation tensors, one per memory module.
-        Each tensor is (T, B, 1) — time steps stacked.
-        Only populated after a forward() call with use_memory=True.
-        """
-        if self._gate_activations is None:
-            return None
-        return [torch.stack(acts, dim=0) if acts else None for acts in self._gate_activations]
+        """Reset all memory modules (called at sequence boundaries)."""
+        if hasattr(self, "memory_modules"):
+            for mem in self.memory_modules:
+                mem.reset()

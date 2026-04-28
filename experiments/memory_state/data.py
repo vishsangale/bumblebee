@@ -1,3 +1,13 @@
+"""
+Text data loading for memory LM training.
+
+Smoke mode: generates random token IDs for fast iteration.
+Real mode: streams from a pre-tokenized binary file (see below for prep).
+
+To prepare real training data (run once, requires ~2GB disk):
+  pip install datasets tiktoken
+  python experiments/memory_state/data.py --prepare
+"""
 from __future__ import annotations
 
 import argparse

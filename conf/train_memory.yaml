@@ -1,17 +1,26 @@
 defaults:
   - track: memory_state
+  - trainer: default
   - runtime: default
   - logging: tensorboard
-  - model: memory_lm_100m
-  - trainer: memory_lm
   - experiment: lm_gated
   - _self_
 
 project:
   name: bumblebee
 
+trainer:
+  seq_len: 128
+  batch_size: 4
+  max_steps: 100
+  grad_clip: 1.0
+  warmup_steps: 10
+
 hydra:
   run:
-    dir: ${runtime.output_root}/${track.slug}/train/${model.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${runtime.output_root}/${track.slug}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${runtime.multirun_root}/${track.slug}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
   job:
-    chdir: true
+    chdir: false

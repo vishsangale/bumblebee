@@ -5,27 +5,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Patch argparse to avoid Python 3.14 incompatibility with Hydra's LazyCompletionHelp
-import argparse
+# Add src to path for imports from memory_state and shared packages
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[2]
+SRC = REPO_ROOT / "src"
 
-_original_expand_help = argparse.HelpFormatter._expand_help
-
-
-def _patched_expand_help(self, action):
-    try:
-        return _original_expand_help(self, action)
-    except (TypeError, ValueError):
-        return ""
-
-
-argparse.HelpFormatter._expand_help = _patched_expand_help
-
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 import torch
 import hydra
@@ -81,7 +67,7 @@ def main(cfg: DictConfig) -> None:
         betas=(0.9, 0.95),
     )
 
-    data_path = ROOT / "data" / "fineweb_train.bin"
+    data_path = REPO_ROOT / "data" / "fineweb_train.bin"
     use_real_data = data_path.exists()
     if use_real_data:
         dataset = TokenDataset(data_path, int(cfg.trainer.seq_len))
@@ -103,13 +89,16 @@ def main(cfg: DictConfig) -> None:
     model.train()
     step = 0
     while step < max_steps:
+        # Learning rate warmup
         lr = float(cfg.trainer.learning_rate) * min(1.0, step / max(warmup, 1))
         for group in optimizer.param_groups:
             group["lr"] = lr
 
+        # Reset memory at sequence boundaries (each training batch = fresh sequence)
         if hasattr(model, "reset_memory"):
             model.reset_memory()
 
+        # Fetch batch
         if use_real_data:
             tokens = dataset.get_batch(step * batch_size, batch_size, device)
         else:
@@ -119,7 +108,7 @@ def main(cfg: DictConfig) -> None:
         targets = tokens[:, 1 : seq_len + 1]
 
         optimizer.zero_grad(set_to_none=True)
-        logits = model(input_ids)
+        logits = model(input_ids)  # (B, T, V)
         loss = torch.nn.functional.cross_entropy(
             logits.reshape(-1, vocab_size), targets.reshape(-1)
         )
