@@ -94,8 +94,7 @@ def _ruler_example(context_words: int, rng: random.Random, case_id: int) -> Memo
         holders = ["Ava", "Ben", "Cora", "Dax"]
         item = "packet"
         steps = [
-            f"{holders[i]} passed the {item} to {holders[i + 1]}."
-            for i in range(len(holders) - 1)
+            f"{holders[i]} passed the {item} to {holders[i + 1]}." for i in range(len(holders) - 1)
         ]
         prompt = (
             "Transfer log:\n"
@@ -172,16 +171,21 @@ def _babilong_example(context_words: int, rng: random.Random, case_id: int) -> M
         holder = "Mira"
         item = "lantern"
         rooms = ["atrium", "hallway", "studio"]
+        move_sentences = [
+            f"{holder} moved to the {rooms[1]}.",
+            f"{holder} moved to the {rooms[2]}.",
+        ]
         prompt = (
             "Story:\n"
             f"{holder} picked up the {item} in the {rooms[0]}.\n"
             f"{_filler(context_words // 3, rng)}\n"
-            f"{holder} moved to the {rooms[1]}.\n"
+            f"{move_sentences[0]}\n"
             f"{_filler(context_words // 3, rng)}\n"
-            f"{holder} moved to the {rooms[2]}.\n\n"
+            f"{move_sentences[1]}\n\n"
             f"Question: Where is the {item}? Answer with the location only."
         )
         answer = rooms[-1]
+        mutation_phrases = move_sentences
     elif task_type == "counting":
         counts = [1, 2, 1]
         items = ["apple", "map", "coin"]
@@ -199,6 +203,7 @@ def _babilong_example(context_words: int, rng: random.Random, case_id: int) -> M
             "Answer with the number only."
         )
         answer = str(sum(counts))
+        mutation_phrases = []  # counting tasks have no state mutations
     else:
         owners = {"compass": "Lena", "notebook": "Iris", "scarf": "Jude"}
         facts = [f"{owner} holds the {item}." for item, owner in owners.items()]
@@ -209,13 +214,18 @@ def _babilong_example(context_words: int, rng: random.Random, case_id: int) -> M
             + "\n\nQuestion: Who holds the compass? Answer with the name only."
         )
         answer = owners["compass"]
+        mutation_phrases = []  # set_membership tasks have no state mutations
 
     return MemoryTaskExample(
         benchmark="babilong",
         context_words=context_words,
         prompt=prompt,
         answer=answer,
-        metadata={"case_id": case_id, "task_family": task_type},
+        metadata={
+            "case_id": case_id,
+            "task_family": task_type,
+            "mutation_phrases": mutation_phrases,
+        },
     )
 
 
