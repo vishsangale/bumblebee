@@ -1,0 +1,3 @@
+name: lm_baseline
+description: "Pure transformer, no memory module"
+use_memory: false

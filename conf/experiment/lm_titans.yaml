@@ -1,0 +1,4 @@
+name: lm_titans
+description: "Titans MAC memory, gradient-only write (no gate)"
+use_memory: true
+gate_disabled: true

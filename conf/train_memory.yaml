@@ -1,0 +1,17 @@
+defaults:
+  - track: memory_state
+  - runtime: default
+  - logging: tensorboard
+  - model: memory_lm_100m
+  - trainer: memory_lm
+  - experiment: lm_gated
+  - _self_
+
+project:
+  name: bumblebee
+
+hydra:
+  run:
+    dir: ${runtime.output_root}/${track.slug}/train/${model.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: true
