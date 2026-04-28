@@ -32,7 +32,6 @@ class GatedTitansMAC(nn.Module):
         super().__init__()
         self.memory = TitansMACMemory(hidden_size, memory_mlp_size)
         self.gate = WriteGate(hidden_size, decay_init)
-        self.mem_norm = nn.LayerNorm(hidden_size)  # stabilizes unbounded memory reads
         self.out_proj = nn.Linear(hidden_size * 2, hidden_size)
         self.last_gate_value: Tensor | None = None
 
@@ -61,12 +60,9 @@ class GatedTitansMAC(nn.Module):
         # Step 4: Apply gated update — gate multiplies the momentum contribution
         self.memory.apply_update(gate_val)
 
-        # Normalize memory context before use — memory weights accumulate
-        # unboundedly within a forward pass; LayerNorm prevents this from
-        # growing the hidden state and causing NaN in the backward.
         # Gate also scales how much memory context enters the output, giving a
         # direct gradient path: loss → out_proj → gate_val * mem_ctx → gate_val.
-        combined = torch.cat([hidden, gate_val * self.mem_norm(mem_ctx)], dim=-1)  # (B, 2H)
+        combined = torch.cat([hidden, gate_val * mem_ctx], dim=-1)  # (B, 2H)
         return self.out_proj(combined)  # (B, H)
 
     def reset(self) -> None:
