@@ -167,3 +167,16 @@ class MemoryTransformer(nn.Module):
         if hasattr(self, "memory_modules"):
             for mem in self.memory_modules:
                 mem.reset()
+
+    def get_gate_activations(self) -> list[Tensor] | None:
+        """
+        Returns list of gate activation tensors, one per memory module.
+        Each tensor is (T, B, 1) — time steps stacked.
+        Only populated after a forward() call with use_memory=True.
+        """
+        if self._gate_activations is None:
+            return None
+        return [
+            torch.stack(acts, dim=0) if acts else None
+            for acts in self._gate_activations
+        ]
