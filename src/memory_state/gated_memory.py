@@ -35,35 +35,33 @@ class GatedTitansMAC(nn.Module):
         self.out_proj = nn.Linear(hidden_size * 2, hidden_size)
         self.last_gate_value: Tensor | None = None
 
-    def forward(self, hidden: Tensor, step: int) -> Tensor:
+    def forward(self, hidden: Tensor, step: int) -> tuple[Tensor, Tensor]:
         """
         hidden: (B, H) — current token representation
         step:   int — position in sequence, for decay term
-        Returns: (B, H) — hidden enriched with memory context
+        Returns:
+            out: (B, H) — hidden enriched with memory context
+            assoc_loss: scalar tensor — add to outer LM loss to train W_K / W_V
 
         Write order: compute_surprise → gate → apply_update(gate).
         The gate multiplies the update BEFORE it is applied to memory weights,
         giving a faithful implementation of: update_t = gate_t × surprise_update_t.
         """
-        # Step 1: Read — no side effects on memory
+        # Step 1: Read — W_K in outer grad path; W1/W2 via snapshot (safe from in-place)
         mem_ctx = self.memory.read(hidden)  # (B, H)
 
-        # Step 2: Compute surprise and cache gradients (no weight change yet)
-        surprise = self.memory.compute_surprise(hidden)  # (B, 1)
+        # Step 2: Compute surprise, cache inner gradients, get outer assoc loss
+        surprise, assoc_loss = self.memory.compute_surprise(hidden)  # (B, 1), scalar
 
         # Step 3: Gate — conditioned on content and surprise
-        # hidden is NOT detached so WriteGate parameters receive gradient via
-        # gate_val * mem_ctx in the output path.
         gate_val = self.gate(hidden, surprise, step)  # (B, 1) in [0, 1]
         self.last_gate_value = gate_val
 
         # Step 4: Apply gated update — gate multiplies the momentum contribution
         self.memory.apply_update(gate_val)
 
-        # Gate also scales how much memory context enters the output, giving a
-        # direct gradient path: loss → out_proj → gate_val * mem_ctx → gate_val.
         combined = torch.cat([hidden, gate_val * mem_ctx], dim=-1)  # (B, 2H)
-        return self.out_proj(combined)  # (B, H)
+        return self.out_proj(combined), assoc_loss  # (B, H), scalar
 
     def reset(self) -> None:
         self.memory.reset()

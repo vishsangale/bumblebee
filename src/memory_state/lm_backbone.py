@@ -128,6 +128,11 @@ class MemoryTransformer(nn.Module):
         """
         input_ids: (B, T) — token indices
         Returns: logits (B, T, V)
+
+        Side effect: sets self.last_assoc_loss — the accumulated associative
+        loss across all memory modules and token positions. Add a weighted copy
+        to the outer task loss to train W_K and W_V (paper outer-loop objective).
+        Zero for baseline models (use_memory=False).
         """
         B, T = input_ids.shape
         pos = torch.arange(T, device=input_ids.device)
@@ -135,6 +140,8 @@ class MemoryTransformer(nn.Module):
 
         if self.use_memory:
             self._gate_activations = [[] for _ in self.memory_modules]
+
+        self.last_assoc_loss: Tensor = torch.zeros(1, device=input_ids.device)
 
         for layer_idx, block in enumerate(self.blocks):
             # Memory read+write before attention (per-token, sequential)
@@ -144,9 +151,9 @@ class MemoryTransformer(nn.Module):
                 enriched = torch.zeros_like(x)
                 for t in range(T):
                     token_h = x[:, t, :]  # (B, d_model)
-                    # forward() calls: read → compute_surprise → gate → apply_update
-                    mem_out = mem_module(token_h, step=t)  # (B, d_model)
+                    mem_out, assoc_loss = mem_module(token_h, step=t)
                     enriched[:, t, :] = mem_out
+                    self.last_assoc_loss = self.last_assoc_loss + assoc_loss
                     if self._gate_activations is not None:
                         assert mem_module.last_gate_value is not None
                         self._gate_activations[mem_idx].append(

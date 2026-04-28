@@ -17,12 +17,18 @@ class TitansMACMemory(nn.Module):
     The write is split into two steps so GatedTitansMAC can insert the gate
     between computing the surprise and applying the update:
 
-        surprise = memory.compute_surprise(token)   # no weight change
+        surprise, assoc_loss = memory.compute_surprise(token)
         gate = write_gate(hidden, surprise, step)
-        memory.apply_update(gate)                   # gated weight change
+        memory.apply_update(gate)
 
-    This gives a faithful implementation of gate_t × surprise_update_t —
-    the gate multiplies the update BEFORE it is applied to the weights.
+    W_K and W_V are outer-loop (AdamW) trained parameters, as per the paper:
+      - W_K gets gradients through read() → mem_ctx → LM loss
+      - W_V gets gradients through assoc_loss → outer LM total loss
+
+    Both paths share a per-sequence snapshot of W1/W2 (taken on the first
+    read/compute_surprise call after reset()). The snapshot is a clone so
+    in-place mutations in apply_update() cannot cause version-counter errors
+    during the outer backward pass.
 
     Reference: Titans (arxiv:2501.00663), MAC variant.
     """
@@ -32,10 +38,9 @@ class TitansMACMemory(nn.Module):
         self.hidden_size = hidden_size
         self.memory_mlp_size = memory_mlp_size
 
-        # Outer-loop projections for the associative inner loss (Titans Eq. 12).
-        # W_K maps tokens to keys; W_V maps tokens to value targets.
-        # These are fixed random projections — no outer-LM gradient path exists yet
-        # because read() uses torch.no_grad() (safe with in-place W1/W2 mutations).
+        # Outer-loop trained projections (Titans Eq. 12): token → key / value.
+        # W_K is used in read() so it receives LM-loss gradients.
+        # W_V is trained via the assoc_loss term added to the outer loss.
         self.W_K = nn.Linear(hidden_size, hidden_size, bias=False)
         self.W_V = nn.Linear(hidden_size, hidden_size, bias=False)
 
@@ -46,9 +51,15 @@ class TitansMACMemory(nn.Module):
         self.register_buffer("m1", torch.zeros(memory_mlp_size, hidden_size))
         self.register_buffer("m2", torch.zeros(hidden_size, memory_mlp_size))
 
-        self.eta: float = 0.1  # inner learning rate (fixed; no LM-loss gradient path)
+        self.eta: float = 0.1   # inner learning rate
         self.beta: float = 0.9  # momentum coefficient
         self.alpha: float = 0.99  # adaptive forgetting
+
+        # Per-sequence snapshot of W1/W2 used for outer-loss gradient paths.
+        # Created lazily on first read()/compute_surprise() after reset().
+        # Cleared by reset() so each sequence gets a fresh snapshot.
+        self._W1_snap: Tensor | None = None
+        self._W2_snap: Tensor | None = None
 
         # Cached gradients between compute_surprise() and apply_update()
         self._cached_g1: Tensor | None = None
@@ -60,47 +71,75 @@ class TitansMACMemory(nn.Module):
         """query: (..., H) → (..., H) using given weight tensors."""
         return F.gelu(query @ W1.T) @ W2.T
 
+    def _get_snap(self) -> tuple[Tensor, Tensor]:
+        """Return (W1_snap, W2_snap) for the current sequence.
+
+        Created once per sequence (after reset()) as a detached clone so
+        in-place apply_update() calls cannot invalidate the outer autograd
+        graph. One clone pair per sequence, shared across all T tokens.
+        """
+        if self._W1_snap is None:
+            self._W1_snap = self.W1.detach().clone()
+            self._W2_snap = self.W2.detach().clone()
+        return self._W1_snap, self._W2_snap  # type: ignore[return-value]
+
     def read(self, query: Tensor) -> Tensor:
         """Read from memory without updating it. query: (B, H) → (B, H).
 
-        W1/W2 are treated as non-differentiable constants here. Gradient
-        flows only through query, which is what allows apply_update() to
-        modify W1/W2 in-place without invalidating the autograd graph.
+        The query is projected through W_K so that W_K receives outer LM-loss
+        gradients. W1/W2 are accessed via the sequence snapshot (detached clone)
+        to prevent version-counter errors from in-place apply_update() mutations.
         """
-        with torch.no_grad():
-            mem_ctx = self._forward_memory(query, self.W1, self.W2)
-        return mem_ctx.detach()
+        W1_snap, W2_snap = self._get_snap()
+        k_q = self.W_K(query)
+        return self._forward_memory(k_q, W1_snap, W2_snap)
 
-    def compute_surprise(self, token: Tensor) -> Tensor:
-        """
-        Compute surprise norm and cache gradients. Does NOT update W1/W2.
-        Must be followed by apply_update() to complete the write step.
+    def compute_surprise(self, token: Tensor) -> tuple[Tensor, Tensor]:
+        """Compute surprise norm, cache inner gradients, and return outer assoc loss.
+
+        Does NOT update W1/W2. Must be followed by apply_update().
 
         token: (B, H)
-        Returns: surprise_norm (B, 1) — detached, for use as gate input.
+        Returns:
+            surprise_norm: (B, 1) — detached, used as write-gate input.
+            assoc_loss: scalar tensor with grad_fn — add to outer LM loss to
+                        train W_K and W_V (Titans paper outer-loop objective).
+
+        Inner loss (Titans Eq. 12): ‖M(k_t) − v_t‖², differentiated w.r.t.
+        W1/W2 only (k_t and v_t are detached for the inner grad path).
+
+        Outer assoc loss: same equation, but k_t = W_K(token) and
+        v_t = W_V(token) are NOT detached, so W_K and W_V receive gradients
+        when the caller adds assoc_loss to the outer task loss.
         """
+        W1_snap, W2_snap = self._get_snap()
+
+        # ── Inner gradient path: only W1/W2 receive gradients ────────────────
         with torch.enable_grad():
             W1 = self.W1.detach().requires_grad_(True)
             W2 = self.W2.detach().requires_grad_(True)
-
-            # Associative loss from Titans Eq. 12: ‖M(k_t) − v_t‖²
-            # Both k_t and v_t are detached so autograd.grad only touches W1/W2.
-            k_t = self.W_K(token).detach()
-            v_t = self.W_V(token).detach()
-            pred = self._forward_memory(k_t, W1, W2)
-            loss = F.mse_loss(pred, v_t)
-            g1, g2 = torch.autograd.grad(loss, [W1, W2])
+            k_inner = self.W_K(token).detach()
+            v_inner = self.W_V(token).detach()
+            pred_inner = self._forward_memory(k_inner, W1, W2)
+            loss_inner = F.mse_loss(pred_inner, v_inner)
+            g1, g2 = torch.autograd.grad(loss_inner, [W1, W2])
 
         self._cached_g1 = g1.detach()
         self._cached_g2 = g2.detach()
 
-        surprise = (g1.detach().norm() + g2.detach().norm()) / 2.0
+        # ── Outer assoc loss: W_K and W_V receive gradients ──────────────────
+        k_t = self.W_K(token)            # outer graph — W_K grad
+        v_t = self.W_V(token)            # outer graph — W_V grad
+        pred_outer = self._forward_memory(k_t, W1_snap, W2_snap)
+        assoc_loss = F.mse_loss(pred_outer, v_t)
+
+        surprise = (g1.norm() + g2.norm()) / 2.0
         batch = token.shape[0]
-        return surprise.expand(batch, 1).contiguous().detach()
+        return surprise.expand(batch, 1).contiguous().detach(), assoc_loss
 
     def apply_update(self, gate_val: float | Tensor = 1.0) -> None:
-        """
-        Apply cached gradients scaled by gate_val to memory weights.
+        """Apply cached gradients scaled by gate_val to memory weights.
+
         Call compute_surprise() first.
 
         gate_val: scalar or (B, 1) tensor in [0, 1].
@@ -114,8 +153,6 @@ class TitansMACMemory(nn.Module):
             scale = float(gate_val)
         g1 = self._cached_g1.to(device=self.W1.device, dtype=self.W1.dtype)
         g2 = self._cached_g2.to(device=self.W2.device, dtype=self.W2.dtype)
-        # Clip inner gradient norms to prevent W1/W2 from growing unboundedly
-        # across many token updates within a single forward pass.
         g1_norm = g1.norm()
         if g1_norm > 1.0:
             g1 = g1 / g1_norm
@@ -131,10 +168,12 @@ class TitansMACMemory(nn.Module):
         self._cached_g2 = None
 
     def reset(self) -> None:
-        """Reset memory weights, momentum, and gradient cache (in-place)."""
+        """Reset memory weights, momentum, snapshot, and gradient cache."""
         nn.init.normal_(self.W1, std=0.02)
         nn.init.normal_(self.W2, std=0.02)
         self.m1.zero_()
         self.m2.zero_()
+        self._W1_snap = None
+        self._W2_snap = None
         self._cached_g1 = None
         self._cached_g2 = None

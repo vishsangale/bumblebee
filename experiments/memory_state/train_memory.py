@@ -144,6 +144,9 @@ def main(cfg: DictConfig) -> None:
         loss = torch.nn.functional.cross_entropy(
             logits.reshape(-1, vocab_size), targets.reshape(-1)
         )
+        assoc_weight = float(cfg.trainer.get("assoc_loss_weight", 0.0))
+        if assoc_weight > 0 and hasattr(model, "last_assoc_loss"):
+            loss = loss + assoc_weight * model.last_assoc_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()

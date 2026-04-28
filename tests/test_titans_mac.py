@@ -20,13 +20,13 @@ def test_read_output_shape(memory):
 
 def test_compute_surprise_shape(memory):
     x = torch.randn(2, 32)
-    surprise = memory.compute_surprise(x)
+    surprise, _ = memory.compute_surprise(x)
     assert surprise.shape == (2, 1)
 
 
 def test_surprise_is_nonnegative(memory):
     x = torch.randn(2, 32)
-    surprise = memory.compute_surprise(x)
+    surprise, _ = memory.compute_surprise(x)
     assert (surprise >= 0).all()
 
 
@@ -42,9 +42,6 @@ def test_gate_zero_means_no_weight_change(memory):
     x = torch.randn(2, 32)
     memory.compute_surprise(x)
     memory.apply_update(gate_val=0.0)
-    # gate=0 → update is zeroed → W1 changes only via alpha*W1 (forgetting term)
-    # With alpha=0.99 close to 1 and small init std, difference is tiny but present
-    # The momentum contribution must be zero: m1 should be zeroed after gate=0
     assert torch.allclose(memory.m1, torch.zeros_like(memory.m1), atol=1e-6)
 
 
@@ -57,12 +54,20 @@ def test_reset_clears_momentum(memory):
     assert memory.m1.abs().sum() == 0
 
 
+def test_reset_clears_snapshot(memory):
+    x = torch.randn(2, 32)
+    memory.compute_surprise(x)
+    assert memory._W1_snap is not None
+    memory.reset()
+    assert memory._W1_snap is None
+
+
 def test_compute_surprise_does_not_require_future_tokens(memory):
     x1 = torch.randn(2, 32)
     x2 = torch.randn(2, 32)
-    s1 = memory.compute_surprise(x1)
+    s1, _ = memory.compute_surprise(x1)
     memory.apply_update(gate_val=1.0)
-    s2 = memory.compute_surprise(x2)
+    s2, _ = memory.compute_surprise(x2)
     memory.apply_update(gate_val=1.0)
     assert not s1.isnan().any()
     assert not s2.isnan().any()
@@ -77,7 +82,6 @@ def test_inner_loss_target_is_not_input():
     x = torch.randn(2, 32)
     k_t = mem.W_K(x).detach()
     v_t = mem.W_V(x).detach()
-    # W_K and W_V are random linear projections — distinct from input and from each other
     assert not torch.allclose(k_t, x, atol=1e-3), "W_K must differ from identity"
     assert not torch.allclose(v_t, x, atol=1e-3), "W_V must differ from identity"
     assert not torch.allclose(k_t, v_t, atol=1e-3), "key and value projections must differ"
@@ -116,3 +120,43 @@ def test_memory_loss_decreases_with_updates():
     assert loss_after < 0.5 * loss_before, (
         f"loss did not decrease sufficiently: {loss_before:.4f} → {loss_after:.4f}"
     )
+
+
+# ── Outer-loop gradient tests (W_K / W_V are outer-loop trained) ──────────────
+
+def test_wk_receives_gradient_from_read():
+    """W_K must receive LM-loss gradient through read() — outer-loop training path."""
+    mem = TitansMACMemory(hidden_size=16, memory_mlp_size=8)
+    x = torch.randn(1, 16)
+    out = mem.read(x)
+    out.sum().backward()
+    assert mem.W_K.weight.grad is not None
+    assert mem.W_K.weight.grad.abs().sum().item() > 0
+
+
+def test_assoc_loss_trains_wk_and_wv():
+    """assoc_loss must have grad_fn and flow gradients to both W_K and W_V."""
+    mem = TitansMACMemory(hidden_size=16, memory_mlp_size=8)
+    x = torch.randn(1, 16)
+    _, assoc_loss = mem.compute_surprise(x)
+
+    assert assoc_loss.requires_grad, "assoc_loss must be differentiable"
+    assoc_loss.backward()
+
+    assert mem.W_K.weight.grad is not None and mem.W_K.weight.grad.abs().sum() > 0, (
+        "W_K must receive gradient from assoc_loss"
+    )
+    assert mem.W_V.weight.grad is not None and mem.W_V.weight.grad.abs().sum() > 0, (
+        "W_V must receive gradient from assoc_loss"
+    )
+
+
+def test_snapshot_shared_across_tokens():
+    """Snapshot must be created once and reused across read()/compute_surprise() calls."""
+    mem = TitansMACMemory(hidden_size=16, memory_mlp_size=8)
+    assert mem._W1_snap is None
+    mem.read(torch.randn(1, 16))
+    snap_id = id(mem._W1_snap)
+    # Second call should NOT create a new snapshot
+    mem.read(torch.randn(1, 16))
+    assert id(mem._W1_snap) == snap_id, "snapshot must be reused within a sequence"
