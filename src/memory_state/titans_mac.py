@@ -32,6 +32,13 @@ class TitansMACMemory(nn.Module):
         self.hidden_size = hidden_size
         self.memory_mlp_size = memory_mlp_size
 
+        # Outer-loop projections for the associative inner loss (Titans Eq. 12).
+        # W_K maps tokens to keys; W_V maps tokens to value targets.
+        # These are fixed random projections — no outer-LM gradient path exists yet
+        # because read() uses torch.no_grad() (safe with in-place W1/W2 mutations).
+        self.W_K = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.W_V = nn.Linear(hidden_size, hidden_size, bias=False)
+
         # Memory weights — buffers, updated by inner optimizer during forward
         self.register_buffer("W1", torch.empty(memory_mlp_size, hidden_size))
         self.register_buffer("W2", torch.empty(hidden_size, memory_mlp_size))
@@ -76,8 +83,12 @@ class TitansMACMemory(nn.Module):
             W1 = self.W1.detach().requires_grad_(True)
             W2 = self.W2.detach().requires_grad_(True)
 
-            pred = self._forward_memory(token.detach(), W1, W2)
-            loss = F.mse_loss(pred, token.detach())
+            # Associative loss from Titans Eq. 12: ‖M(k_t) − v_t‖²
+            # Both k_t and v_t are detached so autograd.grad only touches W1/W2.
+            k_t = self.W_K(token).detach()
+            v_t = self.W_V(token).detach()
+            pred = self._forward_memory(k_t, W1, W2)
+            loss = F.mse_loss(pred, v_t)
             g1, g2 = torch.autograd.grad(loss, [W1, W2])
 
         self._cached_g1 = g1.detach()
