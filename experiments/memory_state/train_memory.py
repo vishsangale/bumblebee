@@ -1,17 +1,31 @@
-# ruff: noqa: E402
+# ruff: noqa: E402,I001
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 # Add src to path for imports from memory_state and shared packages
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
+REPO_ROOT = SCRIPT_DIR.parents[1]
 SRC = REPO_ROOT / "src"
 
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+
+_original_expand_help = argparse.HelpFormatter._expand_help
+
+
+def _patched_expand_help(self, action):
+    if isinstance(action.help, (str, bytes)):
+        return _original_expand_help(self, action)
+    return None
+
+
+argparse.HelpFormatter._expand_help = _patched_expand_help
 
 import torch
 import hydra
@@ -47,7 +61,12 @@ def build_model(cfg: DictConfig) -> MemoryTransformer:
         memory_decay_init=float(cfg.model.memory_decay_init),
     )
     use_memory = bool(cfg.experiment.use_memory)
-    return MemoryTransformer(model_cfg, use_memory=use_memory)
+    model = MemoryTransformer(model_cfg, use_memory=use_memory)
+    gate_disabled = bool(cfg.experiment.get("gate_disabled", False))
+    if use_memory and gate_disabled:
+        for memory_module in model.memory_modules:
+            memory_module.gate.set_force_open(True)
+    return model
 
 
 @hydra.main(version_base="1.3", config_path="../../conf", config_name="train_memory")

@@ -60,8 +60,7 @@ class TitansMACMemory(nn.Module):
 
     def read(self, query: Tensor) -> Tensor:
         """Read from memory without updating it. query: (B, H) → (B, H)."""
-        with torch.no_grad():
-            return self._forward_memory(query, self.W1, self.W2)
+        return self._forward_memory(query, self.W1, self.W2)
 
     def compute_surprise(self, token: Tensor) -> Tensor:
         """
@@ -71,12 +70,13 @@ class TitansMACMemory(nn.Module):
         token: (B, H)
         Returns: surprise_norm (B, 1) — detached, for use as gate input.
         """
-        W1 = self.W1.detach().requires_grad_(True)
-        W2 = self.W2.detach().requires_grad_(True)
+        with torch.enable_grad():
+            W1 = self.W1.detach().requires_grad_(True)
+            W2 = self.W2.detach().requires_grad_(True)
 
-        pred = self._forward_memory(token.detach(), W1, W2)
-        loss = F.mse_loss(pred, token.detach())
-        g1, g2 = torch.autograd.grad(loss, [W1, W2])
+            pred = self._forward_memory(token.detach(), W1, W2)
+            loss = F.mse_loss(pred, token.detach())
+            g1, g2 = torch.autograd.grad(loss, [W1, W2])
 
         self._cached_g1 = g1.detach()
         self._cached_g2 = g2.detach()
@@ -95,21 +95,31 @@ class TitansMACMemory(nn.Module):
                   gate_val=0.0 → no update (momentum zeroed).
         """
         assert self._cached_g1 is not None, "call compute_surprise() before apply_update()"
-        scale = gate_val if isinstance(gate_val, float) else float(gate_val.mean().item())
-        eta = self.eta
-        with torch.no_grad():
-            self.m1.mul_(self.beta).sub_(self._cached_g1, alpha=eta * scale)
-            self.m2.mul_(self.beta).sub_(self._cached_g2, alpha=eta * scale)
-            self.W1.mul_(self.alpha).add_(self.m1)
-            self.W2.mul_(self.alpha).add_(self.m2)
+        if isinstance(gate_val, Tensor):
+            scale = gate_val.mean().to(device=self.W1.device, dtype=self.W1.dtype)
+        else:
+            scale = torch.tensor(gate_val, device=self.W1.device, dtype=self.W1.dtype)
+
+        eta = self.log_eta.exp().to(device=self.W1.device, dtype=self.W1.dtype)
+        g1 = self._cached_g1.to(device=self.W1.device, dtype=self.W1.dtype)
+        g2 = self._cached_g2.to(device=self.W2.device, dtype=self.W2.dtype)
+
+        self.m1 = self.m1 * self.beta - g1 * eta * scale
+        self.m2 = self.m2 * self.beta - g2 * eta * scale
+        self.W1 = self.W1 * self.alpha + self.m1
+        self.W2 = self.W2 * self.alpha + self.m2
         self._cached_g1 = None
         self._cached_g2 = None
 
     def reset(self) -> None:
         """Reset memory weights, momentum, and gradient cache."""
+        device = self.W1.device
+        dtype = self.W1.dtype
+        self.W1 = torch.empty(self.memory_mlp_size, self.hidden_size, device=device, dtype=dtype)
+        self.W2 = torch.empty(self.hidden_size, self.memory_mlp_size, device=device, dtype=dtype)
+        self.m1 = torch.zeros_like(self.W1)
+        self.m2 = torch.zeros_like(self.W2)
         nn.init.normal_(self.W1, std=0.02)
         nn.init.normal_(self.W2, std=0.02)
-        self.m1.zero_()
-        self.m2.zero_()
         self._cached_g1 = None
         self._cached_g2 = None

@@ -33,6 +33,7 @@ class GatedTitansMAC(nn.Module):
         self.memory = TitansMACMemory(hidden_size, memory_mlp_size)
         self.gate = WriteGate(hidden_size, decay_init)
         self.out_proj = nn.Linear(hidden_size * 2, hidden_size)
+        self.last_gate_value: Tensor | None = None
 
     def forward(self, hidden: Tensor, step: int) -> Tensor:
         """
@@ -52,6 +53,7 @@ class GatedTitansMAC(nn.Module):
 
         # Step 3: Gate — uses surprise norm before it is applied
         gate_val = self.gate(hidden.detach(), surprise, step)  # (B, 1) in [0, 1]
+        self.last_gate_value = gate_val
 
         # Step 4: Apply gated update — gate multiplies the momentum contribution
         self.memory.apply_update(gate_val)
@@ -63,3 +65,4 @@ class GatedTitansMAC(nn.Module):
     def reset(self) -> None:
         self.memory.reset()
         self.gate.reset()
+        self.last_gate_value = None

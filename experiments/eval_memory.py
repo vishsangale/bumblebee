@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from collections import defaultdict
@@ -9,10 +10,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+sys.path.insert(0, str(SRC))
 
 import hydra
+
+_original_expand_help = argparse.HelpFormatter._expand_help
+
+
+def _patched_expand_help(self, action):
+    if isinstance(action.help, (str, bytes)):
+        _original_expand_help(self, action)
+
+
+argparse.HelpFormatter._expand_help = _patched_expand_help
 from omegaconf import DictConfig, OmegaConf
 
 from memory_state.proxy_tasks import (

@@ -35,7 +35,6 @@ class TokenDataset:
         return max(0, len(self.data) - self.seq_len - 1)
 
     def get_batch(self, start: int, batch_size: int, device: torch.device) -> Tensor:
-        import numpy as np
         chunks = []
         for i in range(batch_size):
             idx = (start + i * self.seq_len) % len(self)
@@ -53,7 +52,12 @@ def prepare_fineweb(output_path: str | Path, num_tokens: int = 100_000_000) -> N
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+    ds = load_dataset(
+        "HuggingFaceFW/fineweb-edu",
+        name="sample-10BT",
+        split="train",
+        streaming=True,
+    )
     written = 0
     with out.open("wb") as f:
         for example in ds:

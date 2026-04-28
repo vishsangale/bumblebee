@@ -1,5 +1,7 @@
 name: lm_gated
+description: "Titans MAC with learned write gate"
 use_memory: true
+gate_disabled: false
 model:
   vocab_size: 50257
   d_model: 768

@@ -1,4 +1,9 @@
+backend: memory_transformer
 name: memory_lm_100m
+model_id: memory_lm_100m
+checkpoint_path: null
+use_memory: true
+max_new_tokens: 24
 vocab_size: 50257
 d_model: 768
 n_heads: 12

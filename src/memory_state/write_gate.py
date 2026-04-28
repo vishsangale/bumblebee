@@ -36,6 +36,7 @@ class WriteGate(nn.Module):
         # Learnable decay rate (trained by outer optimizer)
         self.log_decay = nn.Parameter(torch.tensor(math.log(-math.log(decay_init))))
         self._eps = 1e-6
+        self.force_open = False
 
     @property
     def decay_rate(self) -> float:
@@ -49,16 +50,26 @@ class WriteGate(nn.Module):
         Returns:  gate (B, 1) in [0, 1]
         """
         batch = hidden.shape[0]
+        if self.force_open:
+            return torch.ones((batch, 1), dtype=hidden.dtype, device=hidden.device)
+
         log_surprise = torch.log(surprise + self._eps)  # (B, 1)
+        decay_base = torch.exp(-self.log_decay.exp()).to(dtype=hidden.dtype, device=hidden.device)
         decay = torch.full(
             (batch, 1),
-            self.decay_rate**step,
+            1.0,
             dtype=hidden.dtype,
             device=hidden.device,
-        )
+        ) * decay_base.pow(step)
         features = torch.cat([hidden, log_surprise, decay], dim=-1)  # (B, H+2)
         return torch.sigmoid(self.linear(features))  # (B, 1)
 
     def reset(self) -> None:
         """No persistent state to reset; provided for interface consistency."""
         pass
+
+    def set_force_open(self, enabled: bool) -> None:
+        """Force the gate to output 1.0 for Titans-only ablations."""
+        self.force_open = enabled
+        for parameter in self.parameters():
+            parameter.requires_grad_(not enabled)

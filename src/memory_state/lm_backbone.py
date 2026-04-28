@@ -147,13 +147,11 @@ class MemoryTransformer(nn.Module):
                     # forward() calls: read → compute_surprise → gate → apply_update
                     mem_out = mem_module(token_h, step=t)  # (B, d_model)
                     enriched[:, t, :] = mem_out
-                    # Gate activations are already computed inside forward();
-                    # re-read from the gate's last input for logging
                     if self._gate_activations is not None:
-                        with torch.no_grad():
-                            surprise = mem_module.memory.read(token_h).norm(dim=-1, keepdim=True)
-                            gate_val = mem_module.gate(token_h.detach(), surprise, step=t)
-                            self._gate_activations[mem_idx].append(gate_val.detach())
+                        assert mem_module.last_gate_value is not None
+                        self._gate_activations[mem_idx].append(
+                            mem_module.last_gate_value.detach()
+                        )
                 x = x + enriched
 
             x = block(x)

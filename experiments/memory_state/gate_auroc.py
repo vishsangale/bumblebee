@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 """
 Compute gate AUROC on bAbI state-mutation tokens.
 
@@ -18,15 +20,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import torch
-from sklearn.metrics import roc_auc_score
 
 from memory_state.lm_backbone import MemoryTransformer, MemoryTransformerConfig
-from experiments.memory_state.data import TokenDataset
+from memory_state.proxy_tasks import MemoryTaskExample
 
 
 def load_model(checkpoint_path: str | Path, config_path: str | Path) -> MemoryTransformer:
     import hydra
-    from omegaconf import OmegaConf
 
     with hydra.initialize(config_path=str(Path(config_path).parent), version_base="1.3"):
         cfg = hydra.compose(config_name=Path(config_path).name)
@@ -52,12 +52,47 @@ def load_model(checkpoint_path: str | Path, config_path: str | Path) -> MemoryTr
     return model
 
 
-def compute_auroc_for_example(model: MemoryTransformer, example_text: str) -> float | None:
+def _mutation_token_labels(
+    example_text: str,
+    token_strings: list[str],
+    mutation_phrases: list[str],
+) -> list[int]:
+    spans: list[tuple[int, int]] = []
+    lowered_text = example_text.lower()
+    for phrase in mutation_phrases:
+        lowered_phrase = phrase.lower()
+        start = 0
+        while True:
+            index = lowered_text.find(lowered_phrase, start)
+            if index == -1:
+                break
+            spans.append((index, index + len(phrase)))
+            start = index + len(phrase)
+
+    labels: list[int] = []
+    cursor = 0
+    for token_string in token_strings:
+        token_start = cursor
+        token_end = cursor + len(token_string)
+        labels.append(
+            int(
+                any(
+                    token_start < span_end and token_end > span_start
+                    for span_start, span_end in spans
+                )
+            )
+        )
+        cursor = token_end
+    return labels
+
+
+def compute_auroc_for_example(model: MemoryTransformer, example: MemoryTaskExample) -> float | None:
     """Compute AUROC for gate activations on a single example."""
     import tiktoken
     from sklearn.metrics import roc_auc_score
 
     enc = tiktoken.get_encoding("gpt2")
+    example_text = example.prompt
     ids = enc.encode(example_text)
     input_ids = torch.tensor([ids])
 
@@ -75,31 +110,24 @@ def compute_auroc_for_example(model: MemoryTransformer, example_text: str) -> fl
     combined = torch.cat(gate_activations, dim=0)  # (num_modules * T, 1)
     gate_vals = combined.squeeze(-1).cpu().numpy()
 
-    # Identify mutation token positions via string search
-    labels = []
-    for phrase in ["moved to the"]:
-        if phrase in example_text:
-            phrase_ids = enc.encode(phrase)
-            # Find all occurrences
-            for i in range(len(ids) - len(phrase_ids) + 1):
-                if ids[i:i + len(phrase_ids)] == phrase_ids:
-                    # Mark tokens in the phrase as mutations
-                    for j in range(len(phrase_ids)):
-                        labels.append(1)
-                else:
-                    labels.append(0)
+    mutation_phrases = [
+        str(phrase)
+        for phrase in example.metadata.get("mutation_phrases", [])
+    ]
+    token_strings = [enc.decode([token_id]) for token_id in ids]
+    labels = _mutation_token_labels(example_text, token_strings, mutation_phrases)
 
     if len(labels) == 0 or sum(labels) == 0:
         return None
 
     # Sample same number of non-mutation tokens
     num_mutations = sum(labels)
-    non_mutation_indices = [i for i, l in enumerate(labels) if l == 0]
+    non_mutation_indices = [i for i, label in enumerate(labels) if label == 0]
     if len(non_mutation_indices) < num_mutations:
         return None
 
     sampled_indices = non_mutation_indices[:num_mutations]
-    all_indices = [i for i, l in enumerate(labels) if l == 1] + sampled_indices
+    all_indices = [i for i, label in enumerate(labels) if label == 1] + sampled_indices
     all_labels = [labels[i] for i in all_indices]
     all_gates = [gate_vals[i] for i in all_indices]
 
@@ -136,7 +164,7 @@ def main() -> None:
     for example in examples:
         if example.benchmark != "babilong":
             continue
-        auroc = compute_auroc_for_example(model, example.prompt)
+        auroc = compute_auroc_for_example(model, example)
         if auroc is not None:
             aurocs.append(auroc)
             print(f"{example.metadata.get('task_family', 'unknown')}: AUROC={auroc:.3f}")
