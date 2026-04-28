@@ -4,3 +4,4 @@ checkpoint_dirname: checkpoints
 tensorboard_dirname: tensorboard
 best_checkpoint_name: best.pt
 last_checkpoint_name: last.pt
+resume_from: null

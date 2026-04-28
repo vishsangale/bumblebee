@@ -105,8 +105,20 @@ def main(cfg: DictConfig) -> None:
     warmup = int(cfg.trainer.warmup_steps)
     max_steps = int(cfg.trainer.max_steps)
 
+    # Resume from checkpoint if specified
+    start_step = 0
+    start_token = 0
+    resume_from = cfg.runtime.get("resume_from", None)
+    if resume_from:
+        ckpt = torch.load(resume_from, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_step = int(ckpt["step"])
+        start_token = int(ckpt.get("tokens_consumed", start_step * batch_size * seq_len))
+        print(f"resumed from {resume_from} at step={start_step} token={start_token:,}")
+
     model.train()
-    step = 0
+    step = start_step
     while step < max_steps:
         # Learning rate warmup
         lr = float(cfg.trainer.learning_rate) * min(1.0, step / max(warmup, 1))
@@ -117,9 +129,10 @@ def main(cfg: DictConfig) -> None:
         if hasattr(model, "reset_memory"):
             model.reset_memory()
 
-        # Fetch batch
+        # Fetch batch — cursor is absolute token position, safe to resume with different batch_size
         if use_real_data:
-            tokens = dataset.get_batch(step * batch_size * seq_len, batch_size, device)
+            token_offset = start_token + (step - start_step) * batch_size * seq_len
+            tokens = dataset.get_batch(token_offset, batch_size, device)
         else:
             tokens = synthetic_batch(batch_size, seq_len, vocab_size, device)
 
@@ -142,8 +155,10 @@ def main(cfg: DictConfig) -> None:
             print(f"step={step} loss={loss.item():.4f} lr={lr:.2e}")
 
         if step % int(cfg.trainer.save_every_n_steps) == 0:
+            tokens_consumed = start_token + (step - start_step) * batch_size * seq_len
             state = {
                 "step": step,
+                "tokens_consumed": tokens_consumed,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "config": OmegaConf.to_container(cfg, resolve=True),
