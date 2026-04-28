@@ -5,6 +5,11 @@ from typing import Protocol
 
 import torch
 
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
+
 
 @dataclass(frozen=True)
 class ModelResponse:
@@ -14,8 +19,7 @@ class ModelResponse:
 
 
 class TextGenerator(Protocol):
-    def generate(self, prompt: str, *, answer: str | None = None) -> ModelResponse:
-        ...
+    def generate(self, prompt: str, *, answer: str | None = None) -> ModelResponse: ...
 
 
 def _resolve_dtype(name: str):
@@ -60,9 +64,8 @@ class HuggingFaceGenerator:
         self.device = next(self.model.parameters()).device
 
     def _format_prompt(self, prompt: str) -> str:
-        if (
-            bool(self.model_cfg.use_chat_template)
-            and hasattr(self.tokenizer, "apply_chat_template")
+        if bool(self.model_cfg.use_chat_template) and hasattr(
+            self.tokenizer, "apply_chat_template"
         ):
             messages = [
                 {"role": "system", "content": str(self.model_cfg.system_prompt)},
@@ -102,10 +105,62 @@ class HuggingFaceGenerator:
         )
 
 
+class MemoryTransformerGenerator:
+    """Wraps a trained MemoryTransformer checkpoint for use with eval_memory.py."""
+
+    def __init__(self, model_cfg) -> None:
+        from memory_state.lm_backbone import MemoryTransformer, MemoryTransformerConfig
+
+        self.enc = tiktoken.get_encoding("gpt2")
+        cfg = MemoryTransformerConfig(
+            vocab_size=int(model_cfg.vocab_size),
+            d_model=int(model_cfg.d_model),
+            n_heads=int(model_cfg.n_heads),
+            n_layers=int(model_cfg.n_layers),
+            d_ffn=int(model_cfg.d_ffn),
+            max_seq_len=int(model_cfg.max_seq_len),
+            dropout=0.0,
+            memory_mlp_size=int(model_cfg.memory_mlp_size),
+            memory_every_n_layers=int(model_cfg.memory_every_n_layers),
+            memory_decay_init=float(model_cfg.memory_decay_init),
+        )
+        use_memory = bool(model_cfg.use_memory)
+        self.model = MemoryTransformer(cfg, use_memory=use_memory)
+        checkpoint = torch.load(str(model_cfg.checkpoint_path), map_location="cpu")
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.model.eval()
+        self.max_new_tokens = int(model_cfg.max_new_tokens)
+
+    def generate(self, prompt: str, *, answer: str | None = None) -> ModelResponse:
+        del answer
+        ids = self.enc.encode(prompt)
+        input_ids = torch.tensor([ids])
+        input_len = len(ids)
+
+        if hasattr(self.model, "reset_memory"):
+            self.model.reset_memory()
+
+        generated: list[int] = []
+        with torch.no_grad():
+            context = input_ids
+            for _ in range(self.max_new_tokens):
+                logits = self.model(context)  # (1, T, V)
+                next_token = int(logits[0, -1].argmax())
+                generated.append(next_token)
+                context = torch.cat([context, torch.tensor([[next_token]])], dim=1)
+                if next_token == self.enc.eot_token:
+                    break
+
+        text = self.enc.decode(generated).strip()
+        return ModelResponse(text=text, input_tokens=input_len, output_tokens=len(generated))
+
+
 def load_text_generator(model_cfg) -> TextGenerator:
     backend = str(model_cfg.backend)
     if backend == "oracle":
         return OracleGenerator()
     if backend == "huggingface":
         return HuggingFaceGenerator(model_cfg)
+    if backend == "memory_transformer":
+        return MemoryTransformerGenerator(model_cfg)
     raise ValueError(f"Unsupported model backend: {backend}")

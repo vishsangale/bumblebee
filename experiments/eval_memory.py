@@ -45,10 +45,28 @@ def summarize(rows: list[dict[str, object]]) -> dict[str, object]:
         )
 
     overall_correct = sum(1 for row in rows if bool(row["correct"]))
+
+    babilong_rows = [r for r in rows if str(r["benchmark"]) == "babilong"]
+    task_family_breakdown: list[dict[str, object]] = []
+    if babilong_rows:
+        by_family: dict[str, list[dict[str, object]]] = {}
+        for row in babilong_rows:
+            fam = str(row.get("metadata", {}).get("task_family", "unknown"))
+            by_family.setdefault(fam, []).append(row)
+        for fam, items in sorted(by_family.items()):
+            correct = sum(1 for it in items if bool(it["correct"]))
+            task_family_breakdown.append({
+                "benchmark": "babilong",
+                "task_family": fam,
+                "num_examples": len(items),
+                "accuracy": correct / len(items),
+            })
+
     return {
         "num_examples": len(rows),
         "overall_accuracy": overall_correct / len(rows) if rows else 0.0,
         "slices": summaries,
+        "babilong_task_families": task_family_breakdown,
     }
 
 
