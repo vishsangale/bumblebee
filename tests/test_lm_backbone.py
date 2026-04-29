@@ -123,3 +123,75 @@ def test_mac_memory_causality():
     assert torch.allclose(logits1[0, :5], logits2[0, :5], atol=1e-4), (
         "MAC forward pass violated causality: future token affected earlier logits"
     )
+
+
+# ── Stage 4: Output gate tests ────────────────────────────────────────────────
+
+def test_output_gate_read_current_called_once_per_token(small_cfg):
+    """Stage 4: read_current must be called exactly T times (once per token after write)."""
+    model = MemoryTransformer(small_cfg, use_memory=True)
+    model.eval()
+
+    ids = torch.randint(0, 256, (1, 8))
+    T = ids.shape[1]
+    call_count = [0]
+    original = model.memory_modules[0].memory.read_current
+
+    def counting(query):
+        call_count[0] += 1
+        return original(query)
+
+    model.memory_modules[0].memory.read_current = counting
+
+    with torch.no_grad():
+        model(ids)
+
+    assert call_count[0] == T, f"expected {T} read_current calls, got {call_count[0]}"
+
+
+def test_output_gate_affects_logits(small_cfg):
+    """Stage 4: output gate must affect logits; identity gate (ones) must give different output."""
+    model = MemoryTransformer(small_cfg, use_memory=True)
+    model.eval()
+
+    torch.manual_seed(0)
+    ids = torch.randint(0, 256, (1, 8))
+
+    with torch.no_grad():
+        logits_real = model(ids).clone()
+
+    model.reset_memory()
+    model.memory_modules[0].memory.read_current = lambda q: torch.ones_like(q)
+
+    with torch.no_grad():
+        logits_identity = model(ids)
+
+    assert not torch.allclose(logits_real, logits_identity, atol=1e-4), (
+        "output gate must affect logits; same result with ones implies gate is not applied"
+    )
+
+
+def test_output_gate_reads_post_write_memory(small_cfg):
+    """Stage 4: read_current must be called after apply_update (W1 must differ from M_0 snapshot)."""
+    model = MemoryTransformer(small_cfg, use_memory=True)
+    model.eval()
+
+    mem = model.memory_modules[0].memory
+    w1_equals_snap_at_read: list[bool] = []
+    original = mem.read_current
+
+    def checking(query):
+        snap = mem._W1_snap
+        w1_equals_snap_at_read.append(snap is not None and torch.equal(mem.W1, snap))
+        return original(query)
+
+    mem.read_current = checking
+
+    ids = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        model(ids)
+
+    assert len(w1_equals_snap_at_read) == ids.shape[1]
+    assert not any(w1_equals_snap_at_read), (
+        "read_current must be called after writes; W1 matched snapshot, meaning reads happened before writes"
+    )

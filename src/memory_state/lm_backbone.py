@@ -197,11 +197,16 @@ class MemoryTransformer(nn.Module):
                 # ── Step 2: MAC attention over [h_tokens, ln1(x)] ─────────────
                 ln1_x = block.ln1(x)  # (B, T, H) — layer-normed content tokens
                 attn_out = block.attn(ln1_x, prefix=h_tokens)  # (B, T, H)
-                x = x + attn_out  # residual add
+                y_full = x + attn_out  # post-attention residual (B, T, H)
 
-                # ── Step 3: Sequential write using post-attention y_t ─────────
+                # ── Step 3+4: Sequential write + output gate (paper Eq. 12) ──
+                # Write each y_t sequentially. After write, gate only the
+                # attention contribution: o_t = attn_out_t ⊗ M*_t(y_t).
+                # Adding o_t residually (not replacing x) preserves the residual
+                # stream when M*_t ≈ 0 at initialization.
+                gate_contribs: list[Tensor] = []
                 for t in range(T):
-                    y_t = x[:, t, :]
+                    y_t = y_full[:, t, :]
                     surprise, assoc_loss = mem_module.memory.compute_surprise(y_t)
                     gate_val = mem_module.gate(y_t, surprise, t)
                     mem_module.last_gate_value = gate_val
@@ -209,8 +214,13 @@ class MemoryTransformer(nn.Module):
                     self.last_assoc_loss = self.last_assoc_loss + assoc_loss
                     if self._gate_activations is not None:
                         self._gate_activations[0].append(gate_val.detach())
+                    # Output gate: read from M*_t (post-write, detached)
+                    o_t = attn_out[:, t, :] * mem_module.memory.read_current(y_t)
+                    gate_contribs.append(o_t)
+                # x_in + gated-attn (residual preserved at init when M*_t ≈ 0)
+                x = x + torch.stack(gate_contribs, dim=1)
 
-                # ── Step 4: FFN portion of the block ──────────────────────────
+                # ── Step 5: FFN portion of the block ──────────────────────────
                 x = x + block.ffn(block.ln2(x))
             else:
                 x = block(x)
