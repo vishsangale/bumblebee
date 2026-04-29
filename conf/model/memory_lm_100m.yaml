@@ -12,5 +12,5 @@ d_ffn: 3072
 max_seq_len: 2048
 dropout: 0.1
 memory_mlp_size: 64
-memory_every_n_layers: 2
+memory_layer: 0
 memory_decay_init: 0.99

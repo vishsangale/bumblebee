@@ -57,7 +57,7 @@ def build_model(cfg: DictConfig) -> MemoryTransformer:
         max_seq_len=int(cfg.model.max_seq_len),
         dropout=float(cfg.model.dropout),
         memory_mlp_size=int(cfg.model.memory_mlp_size),
-        memory_every_n_layers=int(cfg.model.memory_every_n_layers),
+        memory_layer=int(cfg.model.get("memory_layer", 0)),
         memory_decay_init=float(cfg.model.memory_decay_init),
     )
     use_memory = bool(cfg.experiment.use_memory)

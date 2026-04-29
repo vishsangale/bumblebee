@@ -40,7 +40,7 @@ def load_model(checkpoint_path: str | Path, config_path: str | Path) -> MemoryTr
         max_seq_len=int(cfg.model.max_seq_len),
         dropout=0.0,
         memory_mlp_size=int(cfg.model.memory_mlp_size),
-        memory_every_n_layers=int(cfg.model.memory_every_n_layers),
+        memory_layer=int(cfg.model.get("memory_layer", 0)),
         memory_decay_init=float(cfg.model.memory_decay_init),
     )
     use_memory = bool(cfg.experiment.use_memory)

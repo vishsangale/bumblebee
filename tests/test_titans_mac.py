@@ -124,14 +124,16 @@ def test_memory_loss_decreases_with_updates():
 
 # ── Outer-loop gradient tests (W_K / W_V are outer-loop trained) ──────────────
 
-def test_wk_receives_gradient_from_read():
-    """W_K must receive LM-loss gradient through read() — outer-loop training path."""
+def test_wq_receives_gradient_from_read():
+    """W_Q must receive LM-loss gradient through read() — outer-loop training path.
+    W_K is NOT in this path; it trains via assoc_loss. W_Q and W_K are separate."""
     mem = TitansMACMemory(hidden_size=16, memory_mlp_size=8)
     x = torch.randn(1, 16)
     out = mem.read(x)
     out.sum().backward()
-    assert mem.W_K.weight.grad is not None
-    assert mem.W_K.weight.grad.abs().sum().item() > 0
+    assert mem.W_Q.weight.grad is not None
+    assert mem.W_Q.weight.grad.abs().sum().item() > 0
+    assert mem.W_K.weight.grad is None, "W_K must NOT receive gradient from read()"
 
 
 def test_assoc_loss_trains_wk_and_wv():

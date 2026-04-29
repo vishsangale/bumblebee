@@ -33,9 +33,13 @@ class TitansMACMemory(nn.Module):
     current token. Gradient norm uses softclamp (tanh-based, smooth) instead of
     a hard clip. Both follow the paper exactly.
 
-    Outer-loop trained projections W_K, W_V:
-      - W_K gradient path: read() → LM loss
+    Outer-loop trained projections W_Q, W_K, W_V:
+      - W_Q gradient path: read() → MAC attention prefix → LM loss
+      - W_K gradient path: assoc_loss auxiliary term → outer loss
       - W_V gradient path: assoc_loss auxiliary term → outer loss
+
+    W_Q (retrieval) and W_K (inner-loss key) are distinct per Eq. 12 of the paper,
+    allowing different similarity spaces for reading vs. writing.
 
     Both read() and compute_surprise() share a per-sequence W1/W2 snapshot
     (one clone pair per memory module per sequence) so the outer backward is
@@ -49,9 +53,10 @@ class TitansMACMemory(nn.Module):
         self.hidden_size = hidden_size
         self.memory_mlp_size = memory_mlp_size
 
-        # Outer-loop trained projections (Eq. 12): token → key / value
-        self.W_K = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.W_V = nn.Linear(hidden_size, hidden_size, bias=False)
+        # Outer-loop trained projections (Eq. 12): token → query / key / value
+        self.W_Q = nn.Linear(hidden_size, hidden_size, bias=False)  # retrieval query
+        self.W_K = nn.Linear(hidden_size, hidden_size, bias=False)  # inner-loss key
+        self.W_V = nn.Linear(hidden_size, hidden_size, bias=False)  # inner-loss value
 
         # Data-dependent inner-loop scalars (Eqs. 9-10):
         #   η_t = sigmoid(W_eta · x_t)   — momentum coefficient
@@ -118,10 +123,11 @@ class TitansMACMemory(nn.Module):
     def read(self, query: Tensor) -> Tensor:
         """Read from memory without updating it. query: (B, H) → (B, H).
 
-        W_K is in the outer LM-loss gradient path. W1/W2 accessed via snapshot.
+        W_Q is in the outer LM-loss gradient path (via MAC attention prefix).
+        W1/W2 accessed via sequence snapshot (safe from in-place apply_update mutations).
         """
         W1_snap, W2_snap = self._get_snap()
-        k_q = self.W_K(query)
+        k_q = self.W_Q(query)
         return self._forward_memory(k_q, W1_snap, W2_snap)
 
     def read_current(self, query: Tensor) -> Tensor:
@@ -130,7 +136,7 @@ class TitansMACMemory(nn.Module):
         Used for the MAC output gate: o_t = y_t ⊗ M*_t(y_t) after writes are done.
         """
         with torch.no_grad():
-            k_q = self.W_K(query)
+            k_q = self.W_Q(query)
             return self._forward_memory(k_q, self.W1, self.W2).detach()
 
     def compute_surprise(self, token: Tensor) -> tuple[Tensor, Tensor]:
@@ -142,7 +148,7 @@ class TitansMACMemory(nn.Module):
         Returns:
             surprise_norm: (B, 1) — detached, used as write-gate input.
             assoc_loss: scalar tensor with grad_fn — add to outer loss to
-                        train W_K (Eq. 12 outer-loop objective).
+                        train W_K and W_V (Eq. 12 outer-loop objective).
 
         Also caches data-dependent η_t, θ_t, α_t for use in apply_update().
         """

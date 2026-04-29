@@ -22,8 +22,23 @@ class MemoryTransformerConfig:
     max_seq_len: int = 2048
     dropout: float = 0.1
     memory_mlp_size: int = 64
-    memory_every_n_layers: int = 2  # insert GatedTitansMAC every N layers
+    memory_layer: int = 0  # which transformer layer hosts the MAC module
     memory_decay_init: float = 0.99
+
+
+def _mac_causal_mask(T_p: int, T: int, device: torch.device) -> Tensor:
+    """MAC causal mask for [h_1..h_Tp, x_1..x_T] attention (lucidrains approach).
+
+    h tokens see all h tokens and are blocked from all x tokens.
+    x tokens see all h tokens and attend causally within the x block.
+    """
+    total = T_p + T
+    mask = torch.zeros(total, total, dtype=torch.bool, device=device)
+    mask[:T_p, T_p:] = True  # h tokens blocked from x tokens
+    mask[T_p:, T_p:] = torch.triu(
+        torch.ones(T, T, dtype=torch.bool, device=device), diagonal=1
+    )
+    return mask
 
 
 class CausalSelfAttention(nn.Module):
@@ -36,19 +51,44 @@ class CausalSelfAttention(nn.Module):
         self.out = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
         self.dropout = nn.Dropout(cfg.dropout)
 
-    def forward(self, x: Tensor) -> Tensor:
-        B, T, C = x.shape
-        q, k, v = self.qkv(x).split(C, dim=-1)
-        q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        scale = math.sqrt(self.head_dim)
-        att = (q @ k.transpose(-2, -1)) / scale
-        mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
-        att = att.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
-        att = self.dropout(F.softmax(att, dim=-1))
-        out = (att @ v).transpose(1, 2).contiguous().view(B, T, C)
-        return self.out(out)
+    def forward(self, x: Tensor, prefix: Tensor | None = None) -> Tensor:
+        """
+        x: (B, T, C) — content tokens (already layer-normed by the block).
+        prefix: (B, T_p, C) — optional h-token prefix (no norm, no pos emb).
+                If given, attention runs over [prefix, x] with MAC causal mask
+                and returns only the x portion (B, T, C).
+        """
+        if prefix is None:
+            B, T, C = x.shape
+            q, k, v = self.qkv(x).split(C, dim=-1)
+            q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+            scale = math.sqrt(self.head_dim)
+            att = (q @ k.transpose(-2, -1)) / scale
+            mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
+            att = att.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+            att = self.dropout(F.softmax(att, dim=-1))
+            out = (att @ v).transpose(1, 2).contiguous().view(B, T, C)
+            return self.out(out)
+        else:
+            # MAC mode: prepend h-token prefix, use MAC causal mask, return x portion
+            B, T_p, C = prefix.shape
+            T = x.shape[1]
+            x_full = torch.cat([prefix, x], dim=1)  # (B, T_p + T, C)
+            T_all = T_p + T
+            q, k, v = self.qkv(x_full).split(C, dim=-1)
+            q = q.view(B, T_all, self.n_heads, self.head_dim).transpose(1, 2)
+            k = k.view(B, T_all, self.n_heads, self.head_dim).transpose(1, 2)
+            v = v.view(B, T_all, self.n_heads, self.head_dim).transpose(1, 2)
+            scale = math.sqrt(self.head_dim)
+            att = (q @ k.transpose(-2, -1)) / scale
+            mask = _mac_causal_mask(T_p, T, x.device)
+            att = att.masked_fill(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+            att = self.dropout(F.softmax(att, dim=-1))
+            out = (att @ v).transpose(1, 2).contiguous().view(B, T_all, C)
+            out = self.out(out)
+            return out[:, T_p:, :]  # (B, T, C) — content tokens only
 
 
 class TransformerBlock(nn.Module):
@@ -72,11 +112,20 @@ class TransformerBlock(nn.Module):
 
 class MemoryTransformer(nn.Module):
     """
-    GPT-style transformer with GatedTitansMAC memory inserted every N layers.
+    GPT-style transformer with a single Titans MAC module at cfg.memory_layer.
 
-    Memory modules process one token at a time (sequential within the sequence
-    dimension) to preserve causal semantics. The enriched representation
-    is added to the hidden state before the next transformer block.
+    MAC integration (Memory as a Context, Titans paper Sections 3-4):
+      1. Parallel read: h_t = M_0(W_Q(x_t)) for all t from M_0 snapshot (no pos emb)
+      2. MAC attention: causal attention over [h_1..h_T, x_1..x_T] → y_1..y_T
+      3. Sequential write: for each t, write y_t to memory using data-dependent
+         η_t/θ_t/α_t scalars and the learned write gate
+      4. FFN: complete the transformer block
+
+    Non-memory layers are standard causal transformer blocks.
+
+    Parallel-approximation note: all reads use M_0 (sequence-start snapshot)
+    rather than M_{t-1} as the paper specifies. This is the standard tractable
+    approximation used by reference implementations.
     """
 
     def __init__(self, cfg: MemoryTransformerConfig, use_memory: bool = True) -> None:
@@ -91,28 +140,15 @@ class MemoryTransformer(nn.Module):
         self.ln_f = nn.LayerNorm(cfg.d_model)
         self.head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
-        # Memory modules at every N-th layer (0-indexed: layers 0, N, 2N, ...)
+        # Single MAC module at cfg.memory_layer
         if use_memory:
             self.memory_modules = nn.ModuleList(
-                [
-                    GatedTitansMAC(cfg.d_model, cfg.memory_mlp_size, cfg.memory_decay_init)
-                    for i in range(cfg.n_layers)
-                    if i % cfg.memory_every_n_layers == 0
-                ]
+                [GatedTitansMAC(cfg.d_model, cfg.memory_mlp_size, cfg.memory_decay_init)]
             )
-            # Map layer index → memory module index
-            self._layer_to_memory = {
-                i: idx
-                for idx, i in enumerate(
-                    j for j in range(cfg.n_layers) if j % cfg.memory_every_n_layers == 0
-                )
-            }
         else:
             self.memory_modules = nn.ModuleList()
-            self._layer_to_memory = {}
 
-        # Storage for last-forward gate activations (for interpretability)
-        self._gate_activations: list[Tensor] | None = None
+        self._gate_activations: list[list[Tensor]] | None = None
 
         self._init_weights()
 
@@ -135,39 +171,49 @@ class MemoryTransformer(nn.Module):
         input_ids: (B, T) — token indices
         Returns: logits (B, T, V)
 
-        Side effect: sets self.last_assoc_loss — the accumulated associative
-        loss across all memory modules and token positions. Add a weighted copy
-        to the outer task loss to train W_K and W_V (paper outer-loop objective).
-        Zero for baseline models (use_memory=False).
+        Side effect: sets self.last_assoc_loss — accumulated associative loss
+        over the sequence. Add a weighted copy to the outer task loss to train
+        W_K and W_V (paper outer-loop objective). Zero for use_memory=False models.
         """
         B, T = input_ids.shape
         pos = torch.arange(T, device=input_ids.device)
         x = self.drop(self.tok_emb(input_ids) + self.pos_emb(pos))
 
         if self.use_memory:
-            self._gate_activations = [[] for _ in self.memory_modules]
+            self._gate_activations = [[]]  # one list for the single memory module
 
         self.last_assoc_loss: Tensor = torch.zeros(1, device=input_ids.device)
 
         for layer_idx, block in enumerate(self.blocks):
-            # Memory read+write before attention (per-token, sequential)
-            if self.use_memory and layer_idx in self._layer_to_memory:
-                mem_idx = self._layer_to_memory[layer_idx]
-                mem_module = self.memory_modules[mem_idx]
-                enriched = torch.zeros_like(x)
+            if self.use_memory and layer_idx == self.cfg.memory_layer:
+                mem_module = self.memory_modules[0]
+
+                # ── Step 1: Parallel read from M_0 snapshot ───────────────────
+                # h_t = M_0(W_Q(x_t)) for all t; no positional embedding on h tokens.
+                h_tokens = torch.stack(
+                    [mem_module.memory.read(x[:, t, :]) for t in range(T)], dim=1
+                )  # (B, T, H)
+
+                # ── Step 2: MAC attention over [h_tokens, ln1(x)] ─────────────
+                ln1_x = block.ln1(x)  # (B, T, H) — layer-normed content tokens
+                attn_out = block.attn(ln1_x, prefix=h_tokens)  # (B, T, H)
+                x = x + attn_out  # residual add
+
+                # ── Step 3: Sequential write using post-attention y_t ─────────
                 for t in range(T):
-                    token_h = x[:, t, :]  # (B, d_model)
-                    mem_out, assoc_loss = mem_module(token_h, step=t)
-                    enriched[:, t, :] = mem_out
+                    y_t = x[:, t, :]
+                    surprise, assoc_loss = mem_module.memory.compute_surprise(y_t)
+                    gate_val = mem_module.gate(y_t, surprise, t)
+                    mem_module.last_gate_value = gate_val
+                    mem_module.memory.apply_update(gate_val)
                     self.last_assoc_loss = self.last_assoc_loss + assoc_loss
                     if self._gate_activations is not None:
-                        assert mem_module.last_gate_value is not None
-                        self._gate_activations[mem_idx].append(
-                            mem_module.last_gate_value.detach()
-                        )
-                x = x + enriched
+                        self._gate_activations[0].append(gate_val.detach())
 
-            x = block(x)
+                # ── Step 4: FFN portion of the block ──────────────────────────
+                x = x + block.ffn(block.ln2(x))
+            else:
+                x = block(x)
 
         x = self.ln_f(x)
         logits = self.head(x)
@@ -179,7 +225,7 @@ class MemoryTransformer(nn.Module):
             for mem in self.memory_modules:
                 mem.reset()
 
-    def get_gate_activations(self) -> list[Tensor] | None:
+    def get_gate_activations(self) -> list[Tensor | None] | None:
         """
         Returns list of gate activation tensors, one per memory module.
         Each tensor is (T, B, 1) — time steps stacked.

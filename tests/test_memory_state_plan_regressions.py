@@ -40,16 +40,17 @@ def _tiny_memory_cfg(**overrides: int | float) -> MemoryTransformerConfig:
         "max_seq_len": 8,
         "dropout": 0.0,
         "memory_mlp_size": 4,
-        "memory_every_n_layers": 1,
+        "memory_layer": 0,
         "memory_decay_init": 0.99,
     }
     values.update(overrides)
     return MemoryTransformerConfig(**values)
 
 
-def test_memory_transformer_language_loss_trains_write_gate() -> None:
-    # eta is a fixed float (not nn.Parameter) — no LM-loss gradient path exists
-    # through the no_grad memory update. WriteGate trains via gate_val * mem_ctx.
+def test_memory_transformer_language_loss_trains_wq() -> None:
+    # In MAC mode, W_Q is in the LM-loss gradient path via the h-token prefix
+    # fed into attention. W1/W2 are buffers (not outer-loop params); the write
+    # gate receives no direct LM-loss gradient (it acts through future memory state).
     model = MemoryTransformer(_tiny_memory_cfg(), use_memory=True)
     input_ids = torch.randint(0, model.cfg.vocab_size, (2, 8))
     targets = torch.randint(0, model.cfg.vocab_size, (2, 8))
@@ -62,10 +63,9 @@ def test_memory_transformer_language_loss_trains_write_gate() -> None:
     loss.backward()
 
     memory_module = model.memory_modules[0]
-    gate_grads = [param.grad for param in memory_module.gate.parameters() if param.requires_grad]
-    assert gate_grads
-    assert all(grad is not None for grad in gate_grads)
-    assert any(grad.abs().sum().item() > 0 for grad in gate_grads)
+    wq_grad = memory_module.memory.W_Q.weight.grad
+    assert wq_grad is not None, "W_Q must receive LM-loss gradient via MAC attention prefix"
+    assert wq_grad.abs().sum().item() > 0
 
 
 def test_train_memory_config_uses_memory_model_and_memory_trainer() -> None:
@@ -122,7 +122,7 @@ def test_lm_titans_experiment_forces_gate_open_and_frozen() -> None:
                 "max_seq_len": 8,
                 "dropout": 0.0,
                 "memory_mlp_size": 4,
-                "memory_every_n_layers": 1,
+                "memory_layer": 0,
                 "memory_decay_init": 0.99,
             },
             "experiment": {

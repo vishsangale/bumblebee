@@ -121,7 +121,7 @@ class MemoryTransformerGenerator:
             max_seq_len=int(model_cfg.max_seq_len),
             dropout=0.0,
             memory_mlp_size=int(model_cfg.memory_mlp_size),
-            memory_every_n_layers=int(model_cfg.memory_every_n_layers),
+            memory_layer=int(getattr(model_cfg, "memory_layer", 0)),
             memory_decay_init=float(model_cfg.memory_decay_init),
         )
         use_memory = bool(model_cfg.use_memory)
