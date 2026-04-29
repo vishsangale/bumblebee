@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from memory_state.gated_memory import GatedTitansMAC
+from memory_state.titans_mac import TitansMACMemory
 
 
 @dataclass
@@ -123,6 +124,11 @@ class MemoryTransformer(nn.Module):
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, std=0.02)
+        # Override scalar projection biases after global init zeros them.
+        # sigmoid(0)=0.5 → α_t=0.5 per token = catastrophic forgetting.
+        for module in self.modules():
+            if isinstance(module, TitansMACMemory):
+                module._init_scalar_projections()
 
     def forward(self, input_ids: Tensor) -> Tensor:
         """
